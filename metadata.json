@@ -1,0 +1,6 @@
+{
+  "name": "Vfinance — Organização Financeira",
+  "description": "Aplicativo moderno de organização e controle financeiro pessoal com acompanhamento de gastos, faturas, parcelamentos, metas, orçamentos e inteligência financeira.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

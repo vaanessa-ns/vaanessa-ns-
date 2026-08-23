@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-main: #f8fafc;
+    --bg-card: #ffffff;
+    --border-subtle: #e2e8f0;
+  }
+
+  .dark {
+    --bg-main: #0A0A0B;
+    --bg-card: #161618;
+    --border-subtle: rgba(255, 255, 255, 0.07);
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--bg-main);
+    color: #f1f5f9;
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar for Chrome, Safari and Opera */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  /* Hide scrollbar for IE, Edge and Firefox */
+  .no-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
+
+  .bg-dark-main {
+    background-color: #0A0A0B;
+  }
+
+  .bg-dark-card {
+    background-color: #161618;
+  }
+
+  .bg-dark-surface {
+    background-color: #1C1C1F;
+  }
+
+  .border-dark-subtle {
+    border-color: rgba(255, 255, 255, 0.07);
+  }
+}
+

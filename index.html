@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vfinance — Gestão Financeira & Inteligência</title>
+    <meta name="description" content="Vfinance — Aplicativo moderno de organização e controle financeiro pessoal." />
+    <meta property="og:title" content="Vfinance — Gestão Financeira & Inteligência" />
+    <meta property="og:description" content="Vfinance — Aplicativo moderno de organização e controle financeiro pessoal." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      window.addEventListener('unhandledrejection', function (e) {
+        if (e.reason && (String(e.reason).includes('WebSocket') || String(e.reason.message || '').includes('WebSocket'))) {
+          e.preventDefault();
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
