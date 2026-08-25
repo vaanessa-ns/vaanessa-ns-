@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { FinanceProvider, useFinance } from './context/FinanceContext';
 import { Header } from './components/Header';
 import { Navigation } from './components/Navigation';
@@ -10,7 +10,11 @@ import { GlobalSearchModal } from './components/GlobalSearchModal';
 import { AuthModal } from './components/AuthModal';
 import { ConnectBankModal } from './components/ConnectBankModal';
 
-// Views
+// Auth Views
+import { ConfirmEmailView } from './views/ConfirmEmailView';
+import { ResetPasswordView } from './views/ResetPasswordView';
+
+// App Views
 import { DashboardView } from './views/DashboardView';
 import { TransactionsView } from './views/TransactionsView';
 import { FixedBillsView } from './views/FixedBillsView';
@@ -121,11 +125,46 @@ const MainLayout: React.FC = () => {
   );
 };
 
+const AppRouter: React.FC = () => {
+  const { authScreen, setAuthScreen } = useAuth();
+  const { setIsAuthModalOpen } = useFinance();
+
+  if (authScreen === 'reset-password') {
+    return (
+      <ResetPasswordView
+        onNavigateToLogin={() => {
+          setAuthScreen('app');
+          setIsAuthModalOpen(true);
+        }}
+        onNavigateToApp={() => {
+          setAuthScreen('app');
+        }}
+      />
+    );
+  }
+
+  if (authScreen === 'confirm-email') {
+    return (
+      <ConfirmEmailView
+        onNavigateToLogin={() => {
+          setAuthScreen('app');
+          setIsAuthModalOpen(true);
+        }}
+        onNavigateToApp={() => {
+          setAuthScreen('app');
+        }}
+      />
+    );
+  }
+
+  return <MainLayout />;
+};
+
 export default function App() {
   return (
     <AuthProvider>
       <FinanceProvider>
-        <MainLayout />
+        <AppRouter />
       </FinanceProvider>
     </AuthProvider>
   );

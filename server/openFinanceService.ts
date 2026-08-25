@@ -21,9 +21,9 @@ export interface BankConnector {
   imageUrl?: string;
 }
 
-const SUPPORTED_INSTITUTIONS: BankConnector[] = [
+export const SUPPORTED_INSTITUTIONS: BankConnector[] = [
   {
-    id: '0',
+    id: 260,
     name: 'Nubank',
     primaryColor: '#820AD1',
     type: 'PERSONAL_BANK',
@@ -31,7 +31,7 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://nubank.com.br',
   },
   {
-    id: '1',
+    id: 341,
     name: 'Itaú Unibanco',
     primaryColor: '#EC7000',
     type: 'PERSONAL_BANK',
@@ -39,23 +39,23 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://www.itau.com.br',
   },
   {
-    id: '2',
-    name: 'Bradesco',
+    id: 237,
+    name: 'Banco Bradesco',
     primaryColor: '#CC092F',
     type: 'PERSONAL_BANK',
     country: 'BR',
     institutionUrl: 'https://banco.bradesco',
   },
   {
-    id: '3',
-    name: 'Santander',
+    id: 33,
+    name: 'Banco Santander',
     primaryColor: '#EA1D25',
     type: 'PERSONAL_BANK',
     country: 'BR',
     institutionUrl: 'https://www.santander.com.br',
   },
   {
-    id: '4',
+    id: 1,
     name: 'Banco do Brasil',
     primaryColor: '#F8D117',
     type: 'PERSONAL_BANK',
@@ -63,7 +63,7 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://www.bb.com.br',
   },
   {
-    id: '5',
+    id: 104,
     name: 'Caixa Econômica Federal',
     primaryColor: '#005CA9',
     type: 'PERSONAL_BANK',
@@ -71,7 +71,7 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://www.caixa.gov.br',
   },
   {
-    id: '6',
+    id: 77,
     name: 'Banco Inter',
     primaryColor: '#FF7A00',
     type: 'PERSONAL_BANK',
@@ -79,7 +79,7 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://inter.co',
   },
   {
-    id: '7',
+    id: 336,
     name: 'C6 Bank',
     primaryColor: '#242424',
     type: 'PERSONAL_BANK',
@@ -87,7 +87,7 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://www.c6bank.com.br',
   },
   {
-    id: '8',
+    id: 208,
     name: 'BTG Pactual',
     primaryColor: '#001E62',
     type: 'PERSONAL_BANK',
@@ -95,7 +95,7 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://www.btgpactual.com',
   },
   {
-    id: '9',
+    id: 756,
     name: 'Sicoob',
     primaryColor: '#003641',
     type: 'PERSONAL_BANK',
@@ -103,7 +103,7 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://www.sicoob.com.br',
   },
   {
-    id: '10',
+    id: 748,
     name: 'Sicredi',
     primaryColor: '#005D37',
     type: 'PERSONAL_BANK',
@@ -111,7 +111,15 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
     institutionUrl: 'https://www.sicredi.com.br',
   },
   {
-    id: '201',
+    id: 102,
+    name: 'XP Investimentos',
+    primaryColor: '#000000',
+    type: 'PERSONAL_BANK',
+    country: 'BR',
+    institutionUrl: 'https://www.xpi.com.br',
+  },
+  {
+    id: 201,
     name: 'Pluggy Sandbox Test Bank',
     primaryColor: '#10B981',
     type: 'PERSONAL_BANK',
@@ -122,7 +130,7 @@ const SUPPORTED_INSTITUTIONS: BankConnector[] = [
 
 let cachedPluggyApiKey: { key: string; expiresAt: number } | null = null;
 
-function getSanitizedCredentials() {
+export function getSanitizedCredentials() {
   const rawId = process.env.PLUGGY_CLIENT_ID || '';
   const rawSecret = process.env.PLUGGY_CLIENT_SECRET || '';
   const clientId = rawId.replace(/^["']|["']$/g, '').trim();
@@ -130,6 +138,10 @@ function getSanitizedCredentials() {
   return { clientId, clientSecret };
 }
 
+/**
+ * Autentica com a Pluggy usando PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET (apenas no servidor)
+ * POST https://api.pluggy.ai/auth
+ */
 export async function getPluggyApiKey(): Promise<string | null> {
   const { clientId, clientSecret } = getSanitizedCredentials();
 
@@ -154,7 +166,7 @@ export async function getPluggyApiKey(): Promise<string | null> {
 
     if (!res.ok) {
       const errorBody = await res.text();
-      console.warn(`Pluggy auth failed with status ${res.status}:`, errorBody);
+      console.warn(`Pluggy /auth failed with status ${res.status}:`, errorBody);
       return null;
     }
 
@@ -162,7 +174,7 @@ export async function getPluggyApiKey(): Promise<string | null> {
     if (data?.apiKey) {
       cachedPluggyApiKey = {
         key: data.apiKey,
-        expiresAt: now + 2 * 60 * 60 * 1000, // 2 hours
+        expiresAt: now + 100 * 60 * 1000, // ~100 minutes (Pluggy token duration is typically 2 hours)
       };
       return data.apiKey;
     }
@@ -171,6 +183,272 @@ export async function getPluggyApiKey(): Promise<string | null> {
   }
 
   return null;
+}
+
+export function getSupportedInstitutions(): BankConnector[] {
+  return SUPPORTED_INSTITUTIONS;
+}
+
+/**
+ * Gera um novo Connect Token para inicializar o Pluggy Connect Widget no frontend
+ * POST https://api.pluggy.ai/connect_token
+ */
+export async function createPluggyConnectToken(options?: {
+  itemId?: string;
+  clientUserId?: string;
+  oauthRedirectUri?: string;
+  connectorId?: number;
+}): Promise<{
+  accessToken: string;
+  connectToken: string;
+  provider: 'pluggy' | 'sandbox';
+  sandbox: boolean;
+  error?: string;
+}> {
+  const apiKey = await getPluggyApiKey();
+
+  if (!apiKey) {
+    // Generate fallback session token if credentials are not yet set
+    const sandboxToken = `sandbox_token_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    return {
+      accessToken: sandboxToken,
+      connectToken: sandboxToken,
+      provider: 'sandbox',
+      sandbox: true,
+      error: 'PLUGGY_CLIENT_ID ou PLUGGY_CLIENT_SECRET não configurados no servidor.',
+    };
+  }
+
+  try {
+    const redirectUri =
+      options?.oauthRedirectUri ||
+      process.env.PLUGGY_OAUTH_REDIRECT_URI ||
+      'https://vaanessa-ns.vercel.app';
+
+    const payload: any = {
+      options: {
+        clientUserId: options?.clientUserId || undefined,
+        oauthRedirectUri: redirectUri,
+        products: ['ACCOUNTS', 'TRANSACTIONS', 'CREDIT_CARDS', 'PAYMENT_DATA', 'INVESTMENTS'],
+      },
+    };
+
+    if (options?.itemId) {
+      payload.itemId = options.itemId;
+    }
+
+    const res = await fetch('https://api.pluggy.ai/connect_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-KEY': apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as PluggyConnectTokenResponse;
+      const token = data.accessToken;
+      return {
+        accessToken: token,
+        connectToken: token,
+        provider: 'pluggy',
+        sandbox: false,
+      };
+    } else {
+      const errorText = await res.text();
+      console.warn(`Pluggy /connect_token failed (${res.status}):`, errorText);
+      return {
+        accessToken: '',
+        connectToken: '',
+        provider: 'pluggy',
+        sandbox: false,
+        error: `Erro ao gerar token na Pluggy (${res.status}): ${errorText}`,
+      };
+    }
+  } catch (e: any) {
+    console.error('Error fetching Pluggy connect token:', e);
+    return {
+      accessToken: '',
+      connectToken: '',
+      provider: 'pluggy',
+      sandbox: false,
+      error: e.message || 'Falha de comunicação com api.pluggy.ai',
+    };
+  }
+}
+
+/**
+ * Consulta dados reais da Pluggy pelo itemId (usando X-API-KEY do servidor)
+ * Normaliza contas, transações, saldos e cartões no formato esperado pelo Vfinance
+ */
+export async function fetchPluggyItemData(itemId: string) {
+  const apiKey = await getPluggyApiKey();
+  if (!apiKey) return null;
+
+  try {
+    // 1. Fetch Item details
+    const itemRes = await fetch(`https://api.pluggy.ai/items/${itemId}`, {
+      headers: { 'X-API-KEY': apiKey },
+    });
+    const item = itemRes.ok ? await itemRes.json() : null;
+
+    // 2. Fetch Accounts
+    const accountsRes = await fetch(`https://api.pluggy.ai/accounts?itemId=${itemId}`, {
+      headers: { 'X-API-KEY': apiKey },
+    });
+    const accountsData = accountsRes.ok ? await accountsRes.json() : { results: [] };
+    const rawAccounts = accountsData.results || [];
+
+    // 3. Fetch Bills (Invoices)
+    const billsRes = await fetch(`https://api.pluggy.ai/bills?itemId=${itemId}`, {
+      headers: { 'X-API-KEY': apiKey },
+    });
+    const billsData = billsRes.ok ? await billsRes.json() : { results: [] };
+    const rawBills = billsData.results || [];
+
+    // 4. Fetch Transactions for each account
+    const accountsWithTransactions = await Promise.all(
+      rawAccounts.map(async (acc: any) => {
+        try {
+          const txRes = await fetch(
+            `https://api.pluggy.ai/transactions?accountId=${acc.id}&pageSize=100`,
+            { headers: { 'X-API-KEY': apiKey } }
+          );
+          const txData = txRes.ok ? await txRes.json() : { results: [] };
+          return {
+            ...acc,
+            rawTransactions: txData.results || [],
+          };
+        } catch {
+          return { ...acc, rawTransactions: [] };
+        }
+      })
+    );
+
+    // Normalize institution metadata
+    const institutionName = item?.connector?.name || 'Instituição Bancária';
+    const institutionId = String(item?.connector?.id || '0');
+    const institutionLogo = item?.connector?.imageUrl || null;
+
+    // Map Normalized Accounts
+    const normalizedAccounts = accountsWithTransactions
+      .filter((acc: any) => acc.type !== 'CREDIT')
+      .map((acc: any) => {
+        const mappedType =
+          acc.type === 'SAVINGS' || acc.subtype === 'SAVINGS_ACCOUNT'
+            ? 'SAVINGS'
+            : acc.type === 'INVESTMENT'
+            ? 'INVESTMENT'
+            : 'CHECKING';
+
+        const rawBalance = typeof acc.balance === 'number' ? acc.balance : parseFloat(acc.balance || '0');
+
+        const transactions = (acc.rawTransactions || []).map((tx: any) => {
+          const amountNum = Math.abs(typeof tx.amount === 'number' ? tx.amount : parseFloat(tx.amount || '0'));
+          const isCredit = tx.type === 'CREDIT' || (typeof tx.amount === 'number' && tx.amount > 0 && tx.type !== 'DEBIT');
+          const txDate = tx.date ? tx.date.split('T')[0] : new Date().toISOString().split('T')[0];
+
+          return {
+            id: tx.id || `tx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            providerTransactionId: tx.id || `ptx_${Date.now()}`,
+            description: tx.description || tx.descriptionRaw || 'Movimentação Bancária',
+            amount: amountNum,
+            transactionType: isCredit ? 'CREDIT' : 'DEBIT',
+            category: typeof tx.category === 'string' ? tx.category : (tx.category?.name || 'Outros'),
+            transactionDate: txDate,
+            status: tx.status === 'PENDING' ? 'PENDING' : 'POSTED',
+          };
+        });
+
+        return {
+          providerAccountId: String(acc.id),
+          institutionName,
+          accountName: acc.name || acc.marketingName || (mappedType === 'SAVINGS' ? `Poupança ${institutionName}` : `Conta Corrente ${institutionName}`),
+          accountType: mappedType,
+          accountNumberMasked: acc.number ? `••• ${acc.number.slice(-4)}` : `••• ${String(acc.id).slice(-4)}`,
+          balance: rawBalance,
+          currency: acc.currencyCode || 'BRL',
+          transactions,
+        };
+      });
+
+    // Map Normalized Credit Cards & Bills
+    const creditAccounts = accountsWithTransactions.filter(
+      (acc: any) => acc.type === 'CREDIT' || acc.creditData || acc.subtype === 'CREDIT_CARD'
+    );
+
+    const normalizedCards = creditAccounts.map((acc: any) => {
+      const creditLimit = acc.creditData?.creditLimit || 5000.0;
+      const availableLimit = acc.creditData?.availableCreditLimit || (creditLimit - Math.abs(acc.balance || 0));
+      const currentBalance = Math.abs(typeof acc.balance === 'number' ? acc.balance : parseFloat(acc.balance || '0'));
+
+      const bills = rawBills.map((b: any) => ({
+        providerBillId: String(b.id),
+        dueDate: b.dueDate ? b.dueDate.split('T')[0] : new Date().toISOString().split('T')[0],
+        totalAmount: typeof b.totalAmount === 'number' ? b.totalAmount : (b.balance || currentBalance),
+        paidAmount: typeof b.paidAmount === 'number' ? b.paidAmount : 0,
+        status: b.status === 'PAID' ? 'PAID' : 'OPEN',
+      }));
+
+      // If no bills endpoint records, create default invoice from current balance
+      if (bills.length === 0 && currentBalance > 0) {
+        const nextDueDate = new Date();
+        nextDueDate.setDate(nextDueDate.getDate() + 15);
+        bills.push({
+          providerBillId: `bill_gen_${acc.id}`,
+          dueDate: nextDueDate.toISOString().split('T')[0],
+          totalAmount: currentBalance,
+          paidAmount: 0,
+          status: 'OPEN',
+        });
+      }
+
+      return {
+        providerCardId: String(acc.id),
+        institutionName,
+        cardName: acc.name || `Cartão ${institutionName}`,
+        lastFourDigits: acc.number ? acc.number.slice(-4) : String(acc.id).slice(-4),
+        creditLimit,
+        availableLimit,
+        bills,
+      };
+    });
+
+    return {
+      connection: {
+        providerItemId: String(itemId),
+        provider: 'pluggy',
+        institutionId,
+        institutionName,
+        institutionLogo,
+        status: item?.status || 'UPDATED',
+        consentStatus: 'ACTIVE',
+        lastSyncAt: new Date().toISOString(),
+      },
+      accounts: normalizedAccounts,
+      cards: normalizedCards,
+    };
+  } catch (err) {
+    console.error('Error fetching Pluggy data:', err);
+    return null;
+  }
+}
+
+export async function deletePluggyItem(itemId: string): Promise<boolean> {
+  const apiKey = await getPluggyApiKey();
+  if (!apiKey) return true;
+
+  try {
+    const res = await fetch(`https://api.pluggy.ai/items/${itemId}`, {
+      method: 'DELETE',
+      headers: { 'X-API-KEY': apiKey },
+    });
+    return res.ok;
+  } catch (e) {
+    console.error('Error deleting Pluggy item:', e);
+    return false;
+  }
 }
 
 export async function getPluggyDiagnostics() {
@@ -199,7 +477,7 @@ export async function getPluggyDiagnostics() {
         authStatus = 'SUCCESS';
         authMessage = 'Autenticação Pluggy OK (API Key gerada com sucesso)';
 
-        // Try connect_token
+        // Test connect_token generation
         try {
           const tokRes = await fetch('https://api.pluggy.ai/connect_token', {
             method: 'POST',
@@ -209,8 +487,8 @@ export async function getPluggyDiagnostics() {
             },
             body: JSON.stringify({
               options: {
-                sandbox: true,
-                products: ['ACCOUNTS', 'TRANSACTIONS', 'CREDIT_CARDS', 'PAYMENT_DATA'],
+                oauthRedirectUri: 'https://vaanessa-ns.vercel.app',
+                products: ['ACCOUNTS', 'TRANSACTIONS', 'CREDIT_CARDS'],
               },
             }),
           });
@@ -244,140 +522,14 @@ export async function getPluggyDiagnostics() {
     connectTokenGenerated,
     connectTokenPreview,
     sandboxReady: true,
-    mode: authStatus === 'SUCCESS' ? 'pluggy-live-or-sandbox' : 'simulation-sandbox',
+    mode: authStatus === 'SUCCESS' ? 'pluggy-live' : 'simulation-sandbox',
     supportedConnectorsCount: SUPPORTED_INSTITUTIONS.length,
     timestamp: new Date().toISOString(),
   };
 }
 
-export function getSupportedInstitutions(): BankConnector[] {
-  return SUPPORTED_INSTITUTIONS;
-}
-
-export async function createPluggyConnectToken(options?: {
-  itemId?: string;
-  clientUserId?: string;
-}): Promise<{ connectToken: string; provider: 'pluggy' | 'sandbox'; sandbox: boolean }> {
-  const apiKey = await getPluggyApiKey();
-
-  if (!apiKey) {
-    // Generate secure sandbox connect session token
-    const sandboxToken = `sandbox_token_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    return {
-      connectToken: sandboxToken,
-      provider: 'sandbox',
-      sandbox: true,
-    };
-  }
-
-  try {
-    const res = await fetch('https://api.pluggy.ai/connect_token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-KEY': apiKey,
-      },
-      body: JSON.stringify({
-        itemId: options?.itemId,
-        clientUserId: options?.clientUserId,
-        options: {
-          products: ['ACCOUNTS', 'TRANSACTIONS', 'CREDIT_CARDS', 'PAYMENT_DATA'],
-        },
-      }),
-    });
-
-    if (res.ok) {
-      const data = (await res.json()) as PluggyConnectTokenResponse;
-      return {
-        connectToken: data.accessToken,
-        provider: 'pluggy',
-        sandbox: false,
-      };
-    } else {
-      console.warn('Pluggy connect token creation failed, falling back to sandbox mode');
-    }
-  } catch (e) {
-    console.error('Error fetching Pluggy connect token:', e);
-  }
-
-  const sandboxToken = `sandbox_token_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  return {
-    connectToken: sandboxToken,
-    provider: 'sandbox',
-    sandbox: true,
-  };
-}
-
-export async function fetchPluggyItemData(itemId: string) {
-  const apiKey = await getPluggyApiKey();
-  if (!apiKey) return null;
-
-  try {
-    const [itemRes, accountsRes, billsRes] = await Promise.all([
-      fetch(`https://api.pluggy.ai/items/${itemId}`, {
-        headers: { 'X-API-KEY': apiKey },
-      }),
-      fetch(`https://api.pluggy.ai/accounts?itemId=${itemId}`, {
-        headers: { 'X-API-KEY': apiKey },
-      }),
-      fetch(`https://api.pluggy.ai/bills?itemId=${itemId}`, {
-        headers: { 'X-API-KEY': apiKey },
-      }),
-    ]);
-
-    const item = itemRes.ok ? await itemRes.json() : null;
-    const accountsData = accountsRes.ok ? await accountsRes.json() : { results: [] };
-    const billsData = billsRes.ok ? await billsRes.json() : { results: [] };
-
-    // Fetch transactions for each account
-    const accounts = accountsData.results || [];
-    const accountsWithTx = await Promise.all(
-      accounts.map(async (acc: any) => {
-        try {
-          const txRes = await fetch(
-            `https://api.pluggy.ai/transactions?accountId=${acc.id}&pageSize=50`,
-            { headers: { 'X-API-KEY': apiKey } }
-          );
-          const txData = txRes.ok ? await txRes.json() : { results: [] };
-          return {
-            ...acc,
-            transactions: txData.results || [],
-          };
-        } catch {
-          return { ...acc, transactions: [] };
-        }
-      })
-    );
-
-    return {
-      item,
-      accounts: accountsWithTx,
-      bills: billsData.results || [],
-    };
-  } catch (err) {
-    console.error('Error fetching Pluggy data:', err);
-    return null;
-  }
-}
-
-export async function deletePluggyItem(itemId: string): Promise<boolean> {
-  const apiKey = await getPluggyApiKey();
-  if (!apiKey) return true;
-
-  try {
-    const res = await fetch(`https://api.pluggy.ai/items/${itemId}`, {
-      method: 'DELETE',
-      headers: { 'X-API-KEY': apiKey },
-    });
-    return res.ok;
-  } catch (e) {
-    console.error('Error deleting Pluggy item:', e);
-    return false;
-  }
-}
-
 // Generate Realistic Sandbox Bank Payload for Open Finance simulation
-export function generateSandboxBankPayload(institutionId: string, customName?: string) {
+export function generateSandboxBankPayload(institutionId: string | number, customName?: string) {
   const institution =
     SUPPORTED_INSTITUTIONS.find((i) => String(i.id) === String(institutionId)) ||
     SUPPORTED_INSTITUTIONS[0];
@@ -393,7 +545,7 @@ export function generateSandboxBankPayload(institutionId: string, customName?: s
   const savingsBal = Math.floor(Math.random() * 8000) + 2500;
   const cardLimit = 7500.0;
   const availableLimit = 4820.0;
-  const currentInvoiceAmount = cardLimit - availableLimit; // ~ 2680.00
+  const currentInvoiceAmount = cardLimit - availableLimit;
 
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
@@ -510,7 +662,7 @@ export function generateSandboxBankPayload(institutionId: string, customName?: s
         bills: [
           {
             providerBillId: `bill_${Date.now()}_1`,
-            dueDate: getPastDateStr(-10), // 10 days in the future
+            dueDate: getPastDateStr(-10),
             totalAmount: currentInvoiceAmount,
             paidAmount: 0.0,
             status: 'OPEN',

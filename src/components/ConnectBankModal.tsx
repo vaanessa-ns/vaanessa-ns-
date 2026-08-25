@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   RefreshCw,
   Search,
-  ExternalLink,
   X,
   AlertCircle,
   Sparkles,
@@ -16,14 +15,17 @@ import {
   KeyRound,
   ChevronDown,
   ChevronUp,
-  Info
+  CreditCard,
+  Wallet,
 } from 'lucide-react';
+import { PluggyConnect } from 'react-pluggy-connect';
 import { useFinance } from '../context/FinanceContext';
 
 interface InstitutionOption {
   id: string;
   name: string;
   code: string;
+  connectorId?: number;
   color: string;
   bgColor: string;
   badge?: string;
@@ -32,19 +34,19 @@ interface InstitutionOption {
 }
 
 const POPULAR_INSTITUTIONS: InstitutionOption[] = [
-  { id: '201', name: 'Pluggy Sandbox Test Bank', code: '201', color: '#10B981', bgColor: 'rgba(16, 185, 129, 0.15)', badge: 'SANDBOX', isSandbox: true, popular: true },
-  { id: 'nubank', name: 'Nubank', code: '260', color: '#820AD1', bgColor: 'rgba(130, 10, 209, 0.15)', popular: true },
-  { id: 'itau', name: 'Itaú Unibanco', code: '341', color: '#EC7000', bgColor: 'rgba(236, 112, 0, 0.15)', popular: true },
-  { id: 'bradesco', name: 'Banco Bradesco', code: '237', color: '#CC092F', bgColor: 'rgba(204, 9, 47, 0.15)', popular: true },
-  { id: 'santander', name: 'Banco Santander', code: '033', color: '#EA1D25', bgColor: 'rgba(234, 29, 37, 0.15)', popular: true },
-  { id: 'bb', name: 'Banco do Brasil', code: '001', color: '#FCDE00', bgColor: 'rgba(252, 222, 0, 0.15)', popular: true },
-  { id: 'inter', name: 'Banco Inter', code: '077', color: '#FF7A00', bgColor: 'rgba(255, 122, 0, 0.15)', popular: true },
-  { id: 'c6', name: 'C6 Bank', code: '336', color: '#242424', bgColor: 'rgba(255, 255, 255, 0.1)', popular: true },
-  { id: 'caixa', name: 'Caixa Econômica', code: '104', color: '#0066B3', bgColor: 'rgba(0, 102, 179, 0.15)', popular: true },
-  { id: 'btg', name: 'BTG Pactual', code: '208', color: '#1B365D', bgColor: 'rgba(27, 54, 93, 0.2)' },
-  { id: 'xp', name: 'XP Investimentos', code: '102', color: '#000000', bgColor: 'rgba(255, 255, 255, 0.1)' },
-  { id: 'sicredi', name: 'Sicredi', code: '748', color: '#008542', bgColor: 'rgba(0, 133, 66, 0.15)' },
-  { id: 'sicoob', name: 'Sicoob', code: '756', color: '#003641', bgColor: 'rgba(0, 54, 65, 0.2)' },
+  { id: 'nubank', name: 'Nubank', code: '260', connectorId: 260, color: '#820AD1', bgColor: 'rgba(130, 10, 209, 0.15)', popular: true },
+  { id: 'itau', name: 'Itaú Unibanco', code: '341', connectorId: 341, color: '#EC7000', bgColor: 'rgba(236, 112, 0, 0.15)', popular: true },
+  { id: 'bradesco', name: 'Banco Bradesco', code: '237', connectorId: 237, color: '#CC092F', bgColor: 'rgba(204, 9, 47, 0.15)', popular: true },
+  { id: 'santander', name: 'Banco Santander', code: '033', connectorId: 33, color: '#EA1D25', bgColor: 'rgba(234, 29, 37, 0.15)', popular: true },
+  { id: 'bb', name: 'Banco do Brasil', code: '001', connectorId: 1, color: '#FCDE00', bgColor: 'rgba(252, 222, 0, 0.15)', popular: true },
+  { id: 'inter', name: 'Banco Inter', code: '077', connectorId: 77, color: '#FF7A00', bgColor: 'rgba(255, 122, 0, 0.15)', popular: true },
+  { id: 'c6', name: 'C6 Bank', code: '336', connectorId: 336, color: '#242424', bgColor: 'rgba(255, 255, 255, 0.1)', popular: true },
+  { id: 'caixa', name: 'Caixa Econômica', code: '104', connectorId: 104, color: '#0066B3', bgColor: 'rgba(0, 102, 179, 0.15)', popular: true },
+  { id: 'btg', name: 'BTG Pactual', code: '208', connectorId: 208, color: '#1B365D', bgColor: 'rgba(27, 54, 93, 0.2)' },
+  { id: 'xp', name: 'XP Investimentos', code: '102', connectorId: 102, color: '#000000', bgColor: 'rgba(255, 255, 255, 0.1)' },
+  { id: 'sicoob', name: 'Sicoob', code: '756', connectorId: 756, color: '#003641', bgColor: 'rgba(0, 54, 65, 0.2)' },
+  { id: 'sicredi', name: 'Sicredi', code: '748', connectorId: 748, color: '#008542', bgColor: 'rgba(0, 133, 66, 0.15)' },
+  { id: '201', name: 'Pluggy Sandbox Test Bank', code: '201', connectorId: 201, color: '#10B981', bgColor: 'rgba(16, 185, 129, 0.15)', badge: 'SANDBOX', isSandbox: true, popular: true },
 ];
 
 interface PluggyDiagnostics {
@@ -65,15 +67,23 @@ interface ConnectBankModalProps {
   onClose: () => void;
 }
 
-export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onClose }) => {
-  const { connectBank, isSyncingBank } = useFinance();
+type ModalStep = 'select' | 'consent' | 'requesting_token' | 'pluggy_widget' | 'syncing' | 'success';
 
-  const [step, setStep] = useState<'select' | 'consent' | 'connecting' | 'success'>('select');
+export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onClose }) => {
+  const { connectBank, isSyncingBank, authUser } = useFinance();
+
+  const [step, setStep] = useState<ModalStep>('select');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBank, setSelectedBank] = useState<InstitutionOption | null>(null);
-  const [customBankName, setCustomBankName] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [connectToken, setConnectToken] = useState<string | null>(null);
+  const [syncDetails, setSyncDetails] = useState<{
+    institutionName: string;
+    accountsCount?: number;
+    cardsCount?: number;
+    transactionsCount?: number;
+  } | null>(null);
 
   // Diagnostics
   const [diagnostics, setDiagnostics] = useState<PluggyDiagnostics | null>(null);
@@ -83,9 +93,11 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
   const fetchDiagnostics = async () => {
     setIsLoadingDiag(true);
     try {
-      const res = await fetch('/api/open-finance/diagnostics');
-      const data = await res.json();
-      setDiagnostics(data);
+      const res = await fetch('/api/pluggy/diagnostics');
+      if (res.ok) {
+        const data = await res.json();
+        setDiagnostics(data);
+      }
     } catch (e) {
       console.warn('Failed to fetch Pluggy diagnostics:', e);
     } finally {
@@ -100,43 +112,149 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
       setSelectedBank(null);
       setErrorMessage(null);
       setStatusMessage('');
+      setConnectToken(null);
+      setSyncDetails(null);
       fetchDiagnostics();
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const filteredInstitutions = POPULAR_INSTITUTIONS.filter(inst =>
-    inst.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    inst.code.includes(searchQuery)
+  const filteredInstitutions = POPULAR_INSTITUTIONS.filter(
+    (inst) =>
+      inst.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      inst.code.includes(searchQuery)
   );
 
   const handleSelectBank = (bank: InstitutionOption) => {
     setSelectedBank(bank);
-    setCustomBankName(bank.name);
     setErrorMessage(null);
     setStep('consent');
   };
 
-  const handleQuickSandboxTest = () => {
-    const sandboxBank = POPULAR_INSTITUTIONS.find(i => i.isSandbox) || POPULAR_INSTITUTIONS[0];
-    handleSelectBank(sandboxBank);
+  const handleOpenAllInstitutions = () => {
+    setSelectedBank(null);
+    setErrorMessage(null);
+    setStep('consent');
   };
 
-  const handleConfirmConsent = async () => {
-    if (!selectedBank) return;
-    setStep('connecting');
+  const handleStartConnection = async () => {
+    setStep('requesting_token');
     setErrorMessage(null);
-    setStatusMessage(`Estabelecendo canal seguro com ${selectedBank.name} via Open Finance / Pluggy...`);
+    setStatusMessage('Solicitando token seguro de conexão ao backend Pluggy...');
 
-    const result = await connectBank(selectedBank.id, selectedBank.name);
+    try {
+      // 1. Request Connect Token from server
+      let res = await fetch('/api/pluggy/connect-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientUserId: authUser?.id,
+          connectorId: selectedBank?.connectorId,
+          oauthRedirectUri: window.location.origin,
+        }),
+      });
 
-    if (result.success) {
-      setStep('success');
-      setStatusMessage(result.message);
-    } else {
+      if (!res.ok) {
+        res = await fetch('/api/open-finance/connect-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientUserId: authUser?.id,
+            connectorId: selectedBank?.connectorId,
+            oauthRedirectUri: window.location.origin,
+          }),
+        });
+      }
+
+      const tokenData = await res.json();
+
+      if (!tokenData?.connectToken && !tokenData?.accessToken) {
+        throw new Error(tokenData?.error || 'Não foi possível gerar o token do Pluggy.');
+      }
+
+      const token = tokenData.connectToken || tokenData.accessToken;
+      setConnectToken(token);
+
+      // If sandbox fallback or simulation token
+      if (tokenData.sandbox || String(token).startsWith('sandbox_token_')) {
+        // Direct sandbox sync
+        setStep('syncing');
+        setStatusMessage('Sincronizando dados simulados de Open Finance...');
+        const result = await connectBank(
+          String(selectedBank?.connectorId || 201),
+          selectedBank?.name || 'Pluggy Sandbox Test Bank'
+        );
+
+        if (result.success) {
+          setSyncDetails({
+            institutionName: selectedBank?.name || 'Pluggy Sandbox Test Bank',
+            accountsCount: 2,
+            cardsCount: 1,
+            transactionsCount: 6,
+          });
+          setStep('success');
+          setStatusMessage(result.message);
+        } else {
+          setStep('consent');
+          setErrorMessage(result.message || 'Erro ao sincronizar.');
+        }
+        return;
+      }
+
+      // Real Pluggy Connect widget flow
+      setStep('pluggy_widget');
+    } catch (err: any) {
+      console.error('Error starting connection:', err);
       setStep('consent');
-      setErrorMessage(result.message || 'Erro ao conectar. Tente novamente.');
+      setErrorMessage(err.message || 'Falha ao inicializar o widget da Pluggy.');
+    }
+  };
+
+  const handlePluggySuccess = async (data: any) => {
+    const item = data?.item;
+    const itemId = item?.id;
+    const institutionName = item?.connector?.name || selectedBank?.name || 'Instituição Conectada';
+    const connectorId = String(item?.connector?.id || selectedBank?.connectorId || '0');
+
+    setStep('syncing');
+    setStatusMessage(`Importando contas, saldos e movimentações reais de ${institutionName}...`);
+
+    try {
+      const result = await connectBank(connectorId, institutionName, itemId);
+
+      if (result.success) {
+        setSyncDetails({
+          institutionName,
+          accountsCount: result.data?.accounts?.length || 1,
+          cardsCount: result.data?.cards?.length || 0,
+          transactionsCount: result.data?.accounts?.[0]?.transactions?.length || 0,
+        });
+        setStep('success');
+        setStatusMessage(result.message);
+      } else {
+        setStep('consent');
+        setErrorMessage(result.message || 'Erro ao salvar os dados sincronizados.');
+      }
+    } catch (err: any) {
+      setStep('consent');
+      setErrorMessage(err.message || 'Falha na sincronização pós-conexão.');
+    }
+  };
+
+  const handlePluggyError = (error: any) => {
+    console.error('Pluggy Connect Error:', error);
+    setStep('consent');
+    setErrorMessage(
+      typeof error === 'string'
+        ? error
+        : error?.message || 'A conexão foi interrompida ou não autorizada pelo banco.'
+    );
+  };
+
+  const handlePluggyClose = () => {
+    if (step === 'pluggy_widget') {
+      setStep('select');
     }
   };
 
@@ -144,10 +262,14 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
       <div
         id="connect-bank-modal"
-        className="bg-white dark:bg-[#161618] w-full max-w-lg rounded-3xl p-6 sm:p-7 shadow-2xl border border-slate-200 dark:border-white/10 relative flex flex-col max-h-[90vh] overflow-hidden"
+        className={`bg-white dark:bg-[#161618] w-full rounded-3xl shadow-2xl border border-slate-200 dark:border-white/10 relative flex flex-col transition-all duration-300 ${
+          step === 'pluggy_widget'
+            ? 'max-w-2xl h-[90vh]'
+            : 'max-w-lg max-h-[90vh]'
+        } overflow-hidden`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-white/5">
+        <div className="flex items-center justify-between p-5 border-b border-slate-100 dark:border-white/5 shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center">
               <ShieldCheck className="w-5 h-5 text-emerald-400" />
@@ -162,52 +284,44 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Sincronização oficial em modo leitura
+                Sincronização oficial em tempo real (Modo Leitura)
               </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            disabled={isSyncingBank}
+            disabled={isSyncingBank || step === 'syncing'}
             className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl transition-colors disabled:opacity-50"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content based on Step */}
-        <div className="flex-1 overflow-y-auto py-5 space-y-4 pr-1">
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {/* STEP 1: Select Bank */}
           {step === 'select' && (
             <div className="space-y-4">
-              {/* Sandbox Quick Connect Action (No real bank needed) */}
-              <div className="bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-emerald-500/5 border border-emerald-500/30 rounded-2xl p-4 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="p-1.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                      <FlaskConical className="w-4 h-4" />
-                    </span>
-                    <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                      Teste em Modo Sandbox
-                    </span>
+              {/* Primary Connect All Button */}
+              <button
+                type="button"
+                onClick={handleOpenAllInstitutions}
+                className="w-full p-4 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-xs sm:text-sm shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-between group cursor-pointer"
+              >
+                <div className="flex items-center gap-3 text-left">
+                  <div className="w-9 h-9 rounded-xl bg-slate-950/20 flex items-center justify-center">
+                    <Building2 className="w-5 h-5 text-slate-950" />
                   </div>
-                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-500 text-slate-950">
-                    SEM CONTA REAL
-                  </span>
+                  <div>
+                    <p className="font-extrabold text-slate-950">Conectar via Pluggy Open Finance</p>
+                    <p className="text-[11px] text-slate-900/80 font-medium">
+                      Abre o widget com todas as instituições do Brasil
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Teste o fluxo completo do Pluggy instantaneamente: importa contas corrente e poupança, faturas de cartão de crédito e extrato com movimentações reais simuladas.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleQuickSandboxTest}
-                  className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-bold shadow-md shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <FlaskConical className="w-4 h-4" />
-                  <span>Testar Agora com Pluggy Sandbox</span>
-                </button>
-              </div>
+                <ArrowRight className="w-5 h-5 text-slate-950 group-hover:translate-x-1 transition-transform" />
+              </button>
 
               {/* Status da Integração & Secrets Accordion */}
               <div className="bg-slate-50 dark:bg-[#1E1E22] border border-slate-200 dark:border-white/10 rounded-2xl p-3.5 space-y-2">
@@ -218,16 +332,16 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                 >
                   <div className="flex items-center gap-2">
                     <KeyRound className="w-4 h-4 text-emerald-400" />
-                    <span>Status das Chaves Pluggy nos Secrets</span>
+                    <span>Status das Chaves Pluggy no Servidor</span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    {diagnostics?.isConfigured ? (
+                    {diagnostics?.authStatus === 'SUCCESS' ? (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400">
-                        Configurado
+                        Pluggy Live Ativo
                       </span>
                     ) : (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-400">
-                        Aguardando Secrets
+                        Modo Sandbox / Secrets
                       </span>
                     )}
                     {showDiagPanel ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -239,35 +353,33 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                     <div className="flex items-center justify-between">
                       <span>PLUGGY_CLIENT_ID:</span>
                       <span className="font-mono text-slate-800 dark:text-slate-200">
-                        {diagnostics?.maskedId || 'Não detectado'}
+                        {diagnostics?.maskedId || 'Não configurado'}
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span>PLUGGY_CLIENT_SECRET:</span>
                       <span className="font-mono text-slate-800 dark:text-slate-200">
-                        {diagnostics?.maskedSecret || 'Não detectado'}
+                        {diagnostics?.maskedSecret || 'Não configurado'}
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span>Status da Autenticação:</span>
-                      <span className={`font-semibold ${diagnostics?.authStatus === 'SUCCESS' ? 'text-emerald-400' : 'text-slate-300'}`}>
+                      <span
+                        className={`font-semibold ${
+                          diagnostics?.authStatus === 'SUCCESS' ? 'text-emerald-400' : 'text-amber-400'
+                        }`}
+                      >
                         {diagnostics?.authMessage || (isLoadingDiag ? 'Verificando...' : 'Pronto para uso')}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Modo de Operação:</span>
-                      <span className="font-bold text-emerald-400">
-                        Sandbox Ativo (Sem risco)
                       </span>
                     </div>
                     <button
                       type="button"
                       onClick={fetchDiagnostics}
                       disabled={isLoadingDiag}
-                      className="text-xs text-emerald-400 hover:underline flex items-center gap-1 mt-1 disabled:opacity-50"
+                      className="text-xs text-emerald-400 hover:underline flex items-center gap-1 mt-1 disabled:opacity-50 cursor-pointer"
                     >
                       <RefreshCw className={`w-3 h-3 ${isLoadingDiag ? 'animate-spin' : ''}`} />
-                      <span>Revalidar credenciais da API</span>
+                      <span>Revalidar credenciais Pluggy</span>
                     </button>
                   </div>
                 )}
@@ -291,7 +403,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                 <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  placeholder="Buscar seu banco (Nubank, Itaú, Inter, Bradesco, Sandbox...)"
+                  placeholder="Buscar banco (Nubank, Itaú, Inter, Bradesco, Santander...)"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-[#202024] border border-slate-200 dark:border-white/10 rounded-2xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-emerald-500"
@@ -301,7 +413,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               {/* Grid of Banks */}
               <div className="space-y-2">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Instituições Suportadas
+                  Instituições Frequentes
                 </span>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-56 overflow-y-auto pr-1">
                   {filteredInstitutions.map((inst) => (
@@ -346,21 +458,27 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
           )}
 
           {/* STEP 2: Consent & Permissions */}
-          {step === 'consent' && selectedBank && (
+          {step === 'consent' && (
             <div className="space-y-5 animate-in fade-in duration-200">
               <div className="flex items-center gap-3 p-4 rounded-2xl bg-slate-50 dark:bg-[#202024] border border-slate-200 dark:border-white/5">
                 <div
                   className="w-12 h-12 rounded-2xl flex items-center justify-center font-bold text-sm text-white shadow-md"
-                  style={{ backgroundColor: selectedBank.color }}
+                  style={{ backgroundColor: selectedBank?.color || '#10B981' }}
                 >
-                  {selectedBank.isSandbox ? <FlaskConical className="w-6 h-6" /> : selectedBank.name.charAt(0)}
+                  {selectedBank?.isSandbox ? (
+                    <FlaskConical className="w-6 h-6" />
+                  ) : selectedBank ? (
+                    selectedBank.name.charAt(0)
+                  ) : (
+                    <Building2 className="w-6 h-6" />
+                  )}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
                     <h4 className="text-sm font-bold text-slate-900 dark:text-white">
-                      {selectedBank.name}
+                      {selectedBank ? selectedBank.name : 'Pluggy Open Finance Brasil'}
                     </h4>
-                    {selectedBank.isSandbox && (
+                    {selectedBank?.isSandbox && (
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-400">
                         Modo Sandbox
                       </span>
@@ -368,7 +486,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                   </div>
                   <p className="text-xs text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    Pronto para sincronizar via Pluggy Open Finance
+                    Pronto para conectar via Pluggy Connect Widget
                   </p>
                 </div>
               </div>
@@ -382,7 +500,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
 
               <div className="space-y-3">
                 <h5 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                  Termo de Consentimento e Dados Compartilhados:
+                  Dados compartilhados em modo leitura:
                 </h5>
 
                 <ul className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300">
@@ -391,7 +509,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                       ✓
                     </div>
                     <span>
-                      <strong className="text-slate-900 dark:text-white">Saldo em Conta:</strong> Leitura do saldo em tempo real para atualizar o "Saldo Disponível".
+                      <strong className="text-slate-900 dark:text-white">Saldo em Conta:</strong> Leitura em tempo real para atualizar o saldo disponível do Vfinance.
                     </span>
                   </li>
                   <li className="flex items-start gap-2.5">
@@ -399,7 +517,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                       ✓
                     </div>
                     <span>
-                      <strong className="text-slate-900 dark:text-white">Extrato & PIX:</strong> Importação das movimentações de receitas e despesas.
+                      <strong className="text-slate-900 dark:text-white">Extrato & PIX:</strong> Importação das movimentações para alimentar relatórios e IA.
                     </span>
                   </li>
                   <li className="flex items-start gap-2.5">
@@ -407,7 +525,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                       ✓
                     </div>
                     <span>
-                      <strong className="text-slate-900 dark:text-white">Cartões de Crédito:</strong> Leitura de limites e faturas em aberto.
+                      <strong className="text-slate-900 dark:text-white">Cartões de Crédito:</strong> Limites, faturas e parcelas futuras.
                     </span>
                   </li>
                   <li className="flex items-start gap-2.5">
@@ -415,7 +533,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                       ✓
                     </div>
                     <span>
-                      <strong className="text-slate-900 dark:text-white">Segurança Total:</strong> Sem permissão para realizar pagamentos ou transferências.
+                      <strong className="text-slate-900 dark:text-white">Segurança Total:</strong> Sem autorização para pagamentos ou movimentações financeiras.
                     </span>
                   </li>
                 </ul>
@@ -424,32 +542,63 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               <div className="p-3 bg-slate-100 dark:bg-[#202024] rounded-2xl text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
                 <Lock className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span>
-                  Consentimento válido por 12 meses. Você pode revogar ou desconectar a qualquer momento.
+                  Consentimento seguro gerenciado pelo Banco Central e Open Finance Brasil.
                 </span>
               </div>
             </div>
           )}
 
-          {/* STEP 3: Connecting Loader */}
-          {step === 'connecting' && (
+          {/* STEP 3: Requesting Token */}
+          {step === 'requesting_token' && (
             <div className="py-12 text-center space-y-4 animate-in fade-in">
               <div className="w-16 h-16 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center justify-center mx-auto animate-pulse">
                 <RefreshCw className="w-8 h-8 animate-spin text-emerald-400" />
               </div>
               <div className="space-y-1">
                 <h4 className="text-base font-bold text-slate-900 dark:text-white">
-                  Sincronizando com {selectedBank?.name}
+                  Gerando Sessão Segura
                 </h4>
                 <p className="text-xs text-slate-400 max-w-xs mx-auto">
-                  {statusMessage || 'Validando consentimento e importando saldos e transações...'}
+                  {statusMessage || 'Solicitando Connect Token à Pluggy...'}
                 </p>
               </div>
             </div>
           )}
 
-          {/* STEP 4: Success */}
+          {/* STEP 4: Pluggy Connect Widget (Live Iframe Component) */}
+          {step === 'pluggy_widget' && connectToken && (
+            <div className="w-full h-full min-h-[500px] flex flex-col rounded-2xl overflow-hidden animate-in fade-in">
+              <PluggyConnect
+                connectToken={connectToken}
+                includeSandbox={true}
+                selectedConnectorId={selectedBank?.connectorId}
+                onSuccess={handlePluggySuccess}
+                onError={handlePluggyError}
+                onClose={handlePluggyClose}
+              />
+            </div>
+          )}
+
+          {/* STEP 5: Syncing Data */}
+          {step === 'syncing' && (
+            <div className="py-12 text-center space-y-4 animate-in fade-in">
+              <div className="w-16 h-16 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center justify-center mx-auto animate-pulse">
+                <RefreshCw className="w-8 h-8 animate-spin text-emerald-400" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-base font-bold text-slate-900 dark:text-white">
+                  Sincronizando Dados Bancários
+                </h4>
+                <p className="text-xs text-slate-400 max-w-xs mx-auto">
+                  {statusMessage || 'Importando contas, saldos e movimentações...'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* STEP 6: Success */}
           {step === 'success' && (
-            <div className="py-8 text-center space-y-4 animate-in fade-in">
+            <div className="py-6 text-center space-y-4 animate-in fade-in">
               <div className="w-16 h-16 rounded-3xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/10">
                 <CheckCircle2 className="w-8 h-8 text-emerald-400" />
               </div>
@@ -458,26 +607,26 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                   Conexão Concluída com Sucesso!
                 </h4>
                 <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                  Sua conta do <strong className="text-emerald-400">{selectedBank?.name}</strong> foi vinculada. O Saldo Disponível, Cartões e Movimentações foram atualizados com os dados.
+                  Sua conta de <strong className="text-emerald-400">{syncDetails?.institutionName || selectedBank?.name || 'sua instituição'}</strong> foi vinculada. O Saldo Disponível, Cartões e Movimentações foram atualizados.
                 </p>
               </div>
 
               <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/20 text-xs text-left space-y-2 text-slate-300">
                 <div className="flex items-center justify-between text-slate-400">
+                  <span>Instituição Conectada:</span>
+                  <span className="text-white font-bold">{syncDetails?.institutionName || selectedBank?.name || 'Banco'}</span>
+                </div>
+                <div className="flex items-center justify-between text-slate-400">
+                  <span>Contas Importadas:</span>
+                  <span className="text-emerald-400 font-bold">{syncDetails?.accountsCount || 1} conta(s)</span>
+                </div>
+                <div className="flex items-center justify-between text-slate-400">
                   <span>Status do Consentimento:</span>
-                  <span className="text-emerald-400 font-bold">ATIVO</span>
+                  <span className="text-emerald-400 font-bold">ATIVO (Open Finance)</span>
                 </div>
                 <div className="flex items-center justify-between text-slate-400">
-                  <span>Provedor:</span>
-                  <span className="text-white font-bold">Pluggy Open Finance</span>
-                </div>
-                <div className="flex items-center justify-between text-slate-400">
-                  <span>Modo:</span>
-                  <span className="text-emerald-400 font-bold">{selectedBank?.isSandbox ? 'Sandbox (Testes)' : 'Open Finance Leitura'}</span>
-                </div>
-                <div className="flex items-center justify-between text-slate-400">
-                  <span>Sincronização:</span>
-                  <span className="text-white font-bold">Em Tempo Real</span>
+                  <span>IA Consultora:</span>
+                  <span className="text-white font-bold">Alimentada com dados reais</span>
                 </div>
               </div>
             </div>
@@ -485,44 +634,46 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
         </div>
 
         {/* Footer Actions */}
-        <div className="pt-4 border-t border-slate-100 dark:border-white/5 flex items-center justify-between gap-3">
-          {step === 'select' && (
-            <button
-              onClick={onClose}
-              className="w-full py-2.5 bg-slate-100 dark:bg-[#202024] hover:bg-slate-200 dark:hover:bg-[#28282C] text-slate-700 dark:text-slate-300 rounded-2xl text-xs font-semibold transition-colors"
-            >
-              Fechar
-            </button>
-          )}
-
-          {step === 'consent' && (
-            <>
+        {step !== 'pluggy_widget' && (
+          <div className="p-5 border-t border-slate-100 dark:border-white/5 flex items-center justify-between gap-3 shrink-0">
+            {step === 'select' && (
               <button
-                onClick={() => setStep('select')}
-                className="py-2.5 px-4 bg-slate-100 dark:bg-[#202024] hover:bg-slate-200 dark:hover:bg-[#28282C] text-slate-700 dark:text-slate-300 rounded-2xl text-xs font-semibold transition-colors"
+                onClick={onClose}
+                className="w-full py-2.5 bg-slate-100 dark:bg-[#202024] hover:bg-slate-200 dark:hover:bg-[#28282C] text-slate-700 dark:text-slate-300 rounded-2xl text-xs font-semibold transition-colors cursor-pointer"
               >
-                Voltar
+                Fechar
               </button>
-              <button
-                onClick={handleConfirmConsent}
-                disabled={isSyncingBank}
-                className="flex-1 py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-2xl text-xs font-bold shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <ShieldCheck className="w-4 h-4" />
-                <span>Autorizar e Conectar</span>
-              </button>
-            </>
-          )}
+            )}
 
-          {step === 'success' && (
-            <button
-              onClick={onClose}
-              className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-2xl text-xs font-bold shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
-            >
-              Ver Contas e Saldos Conectados
-            </button>
-          )}
-        </div>
+            {step === 'consent' && (
+              <>
+                <button
+                  onClick={() => setStep('select')}
+                  className="py-2.5 px-4 bg-slate-100 dark:bg-[#202024] hover:bg-slate-200 dark:hover:bg-[#28282C] text-slate-700 dark:text-slate-300 rounded-2xl text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  Voltar
+                </button>
+                <button
+                  onClick={handleStartConnection}
+                  disabled={isSyncingBank}
+                  className="flex-1 py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-2xl text-xs font-bold shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Autorizar e Conectar</span>
+                </button>
+              </>
+            )}
+
+            {step === 'success' && (
+              <button
+                onClick={onClose}
+                className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-2xl text-xs font-bold shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
+              >
+                Ver Contas e Saldos Conectados
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

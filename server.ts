@@ -55,7 +55,7 @@ async function startServer() {
   // ==========================================
 
   // Diagnostics & Credential Checker
-  app.get("/api/open-finance/diagnostics", async (_req, res) => {
+  const handleDiagnostics = async (_req: any, res: any) => {
     try {
       const diag = await getPluggyDiagnostics();
       return res.json(diag);
@@ -63,22 +63,47 @@ async function startServer() {
       console.error("Diagnostics error:", error);
       return res.status(500).json({ error: "Failed to run Pluggy diagnostics" });
     }
-  });
+  };
+  app.get("/api/open-finance/diagnostics", handleDiagnostics);
+  app.get("/api/pluggy/diagnostics", handleDiagnostics);
 
   // 1. Connect Token (Starts the Open Finance widget / consent flow)
-  app.post("/api/open-finance/connect-token", async (req, res) => {
+  const handleConnectToken = async (req: any, res: any) => {
     try {
-      const { itemId, clientUserId } = req.body || {};
-      const tokenResult = await createPluggyConnectToken({ itemId, clientUserId });
-      return res.json(tokenResult);
+      const { itemId, clientUserId, oauthRedirectUri, connectorId } = req.body || {};
+      const tokenResult = await createPluggyConnectToken({
+        itemId,
+        clientUserId,
+        oauthRedirectUri: oauthRedirectUri || "https://vaanessa-ns.vercel.app",
+        connectorId: connectorId ? Number(connectorId) : undefined,
+      });
+
+      if (tokenResult.error && !tokenResult.accessToken) {
+        return res.status(400).json({
+          error: tokenResult.error,
+          accessToken: "",
+          connectToken: "",
+          provider: tokenResult.provider,
+          sandbox: tokenResult.sandbox,
+        });
+      }
+
+      return res.json({
+        accessToken: tokenResult.accessToken,
+        connectToken: tokenResult.connectToken,
+        provider: tokenResult.provider,
+        sandbox: tokenResult.sandbox,
+      });
     } catch (error: any) {
       console.error("Error creating connect token:", error);
       return res.status(500).json({ error: "Failed to initialize Open Finance connect token" });
     }
-  });
+  };
+  app.post("/api/open-finance/connect-token", handleConnectToken);
+  app.post("/api/pluggy/connect-token", handleConnectToken);
 
   // 2. Institutions List
-  app.get("/api/open-finance/institutions", (_req, res) => {
+  const handleInstitutions = (_req: any, res: any) => {
     try {
       const institutions = getSupportedInstitutions();
       return res.json({ institutions });
@@ -86,16 +111,18 @@ async function startServer() {
       console.error("Error fetching institutions:", error);
       return res.status(500).json({ error: "Failed to fetch institutions" });
     }
-  });
+  };
+  app.get("/api/open-finance/institutions", handleInstitutions);
+  app.get("/api/pluggy/institutions", handleInstitutions);
 
   // 3. Synchronize Open Finance Data (Accounts, Transactions, Cards, Invoices)
-  app.post("/api/open-finance/sync", async (req, res) => {
+  const handleSync = async (req: any, res: any) => {
     try {
       const { itemId, institutionId, institutionName } = req.body || {};
 
       // If itemId is a real Pluggy itemId
-      if (itemId && !itemId.startsWith("sandbox_")) {
-        const realData = await fetchPluggyItemData(itemId);
+      if (itemId && !String(itemId).startsWith("sandbox_")) {
+        const realData = await fetchPluggyItemData(String(itemId));
         if (realData) {
           return res.json({
             success: true,
@@ -106,7 +133,7 @@ async function startServer() {
       }
 
       // If sandbox or testing mode: generate realistic synchronized Open Finance data
-      const sandboxPayload = generateSandboxBankPayload(institutionId || "0", institutionName);
+      const sandboxPayload = generateSandboxBankPayload(institutionId || 201, institutionName);
       return res.json({
         success: true,
         provider: "pluggy-sandbox",
@@ -116,7 +143,9 @@ async function startServer() {
       console.error("Error synchronizing Open Finance data:", error);
       return res.status(500).json({ error: "Failed to synchronize bank data" });
     }
-  });
+  };
+  app.post("/api/open-finance/sync", handleSync);
+  app.post("/api/pluggy/sync", handleSync);
 
   // 4. Accounts Endpoint
   app.get("/api/open-finance/accounts", async (req, res) => {
@@ -178,8 +207,9 @@ async function startServer() {
       const { itemId } = req.query;
       if (itemId && typeof itemId === "string" && !itemId.startsWith("sandbox_")) {
         const realData = await fetchPluggyItemData(itemId);
-        if (realData?.bills) {
-          return res.json({ bills: realData.bills });
+        if (realData?.cards) {
+          const allBills = realData.cards.flatMap((c) => c.bills || []);
+          return res.json({ bills: allBills });
         }
       }
       const demo = generateSandboxBankPayload("0");

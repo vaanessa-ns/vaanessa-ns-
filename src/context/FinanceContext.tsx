@@ -64,7 +64,11 @@ export interface FinanceContextType {
   isSyncingBank: boolean;
   isConnectBankOpen: boolean;
   setIsConnectBankOpen: (open: boolean) => void;
-  connectBank: (institutionId?: string, customName?: string) => Promise<{ success: boolean; message: string }>;
+  connectBank: (
+    institutionId?: string,
+    customName?: string,
+    itemId?: string
+  ) => Promise<{ success: boolean; message: string; data?: any }>;
   syncBankConnection: (connectionId?: string) => Promise<void>;
   disconnectBank: (connectionId: string) => Promise<void>;
 
@@ -1451,18 +1455,33 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Open Finance & Bank Operations
   const connectBank = async (
     institutionId?: string,
-    customName?: string
-  ): Promise<{ success: boolean; message: string }> => {
+    customName?: string,
+    itemId?: string
+  ): Promise<{ success: boolean; message: string; data?: any }> => {
     setIsSyncingBank(true);
     try {
-      const res = await fetch('/api/open-finance/sync', {
+      // Try /api/pluggy/sync first, fallback to /api/open-finance/sync
+      let res = await fetch('/api/pluggy/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          itemId,
           institutionId: institutionId || '0',
           institutionName: customName,
         }),
       });
+
+      if (!res.ok) {
+        res = await fetch('/api/open-finance/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            itemId,
+            institutionId: institutionId || '0',
+            institutionName: customName,
+          }),
+        });
+      }
 
       const data = await res.json();
       if (!data.success || !data.data) {
@@ -1476,11 +1495,11 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const newConnection: BankConnection = {
         id: newConnId,
         userId,
-        provider: payload.connection.provider || 'pluggy',
-        providerItemId: payload.connection.providerItemId,
-        institutionId: payload.connection.institutionId,
-        institutionName: payload.connection.institutionName,
-        status: 'UPDATED',
+        provider: payload.connection?.provider || 'pluggy',
+        providerItemId: payload.connection?.providerItemId || itemId || `item_${Date.now()}`,
+        institutionId: payload.connection?.institutionId || institutionId || '0',
+        institutionName: payload.connection?.institutionName || customName || 'Instituição Bancária',
+        status: payload.connection?.status || 'UPDATED',
         consentStatus: 'ACTIVE',
         lastSyncAt: new Date().toISOString(),
         createdAt: new Date().toISOString(),
@@ -1489,7 +1508,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       setBankConnections((prev) => [
         newConnection,
-        ...prev.filter((c) => c.institutionName !== payload.connection.institutionName),
+        ...prev.filter((c) => c.institutionName !== newConnection.institutionName && c.providerItemId !== newConnection.providerItemId),
       ]);
 
       // Save to Supabase bank_connections

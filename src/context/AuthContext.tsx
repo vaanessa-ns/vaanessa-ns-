@@ -1,6 +1,9 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { User, Session, AuthError } from '@supabase/supabase-js';
 import { supabase, isSupabaseConfigured, supabaseConfigError } from '../lib/supabase';
+import { getAuthRedirectUrl } from '../utils/authUrls';
+
+export type AuthScreenType = 'app' | 'confirm-email' | 'reset-password';
 
 interface AuthContextType {
   user: User | null;
@@ -9,10 +12,17 @@ interface AuthContextType {
   isConfigured: boolean;
   configError: string | null;
   authError: string | null;
+  authScreen: AuthScreenType;
+  setAuthScreen: (screen: AuthScreenType) => void;
   signIn: (email: string, password: string) => Promise<{ error: AuthError | Error | null }>;
-  signUp: (email: string, password: string, name: string) => Promise<{ error: AuthError | Error | null }>;
+  signUp: (
+    email: string,
+    password: string,
+    name: string
+  ) => Promise<{ error: AuthError | Error | null; user?: User | null }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: AuthError | Error | null }>;
+  updatePassword: (password: string) => Promise<{ error: AuthError | Error | null }>;
   resendConfirmation: (email: string) => Promise<{ error: AuthError | Error | null }>;
   clearError: () => void;
 }
@@ -24,8 +34,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authScreen, setAuthScreen] = useState<AuthScreenType>('app');
 
   useEffect(() => {
+    // Check URL to determine initial screen
+    if (typeof window !== 'undefined') {
+      const pathname = window.location.pathname.toLowerCase();
+      const search = window.location.search;
+      const hash = window.location.hash;
+
+      if (pathname.includes('/redefinir-senha') || search.includes('mode=redefinir-senha') || hash.includes('type=recovery')) {
+        setAuthScreen('reset-password');
+      } else if (
+        pathname.includes('/confirmar-email') ||
+        search.includes('mode=confirmar-email') ||
+        hash.includes('type=signup') ||
+        search.includes('type=signup') ||
+        search.includes('token_hash=')
+      ) {
+        setAuthScreen('confirm-email');
+      }
+    }
+
     if (!isSupabaseConfigured || !supabase) {
       setLoading(false);
       return;
@@ -33,27 +63,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const handleInitialAuth = async () => {
       try {
-        // 1. Process URL parameters if returning from an email confirmation link
         if (typeof window !== 'undefined') {
           const urlParams = new URLSearchParams(window.location.search);
           const code = urlParams.get('code');
           const tokenHash = urlParams.get('token_hash');
           const type = urlParams.get('type') as any;
+          const hash = window.location.hash;
 
-          // If Supabase redirected with a PKCE code
+          // Check if hash has type=recovery
+          if (hash.includes('type=recovery')) {
+            setAuthScreen('reset-password');
+          } else if (hash.includes('type=signup')) {
+            setAuthScreen('confirm-email');
+          }
+
+          // 1. Process PKCE Code exchange
           if (code) {
             try {
               const { data, error } = await supabase.auth.exchangeCodeForSession(code);
               if (!error && data?.session) {
                 setSession(data.session);
                 setUser(data.session.user);
+                if (type === 'recovery' || hash.includes('type=recovery')) {
+                  setAuthScreen('reset-password');
+                } else if (type === 'signup' || window.location.pathname.includes('/confirmar-email')) {
+                  setAuthScreen('confirm-email');
+                }
               }
             } catch (err) {
               console.warn('Code exchange note:', err);
             }
           }
 
-          // If Supabase redirected with token_hash and type
+          // 2. Process OTP / Token hash verify
           if (tokenHash && type) {
             try {
               const { data, error } = await supabase.auth.verifyOtp({
@@ -63,24 +105,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (!error && data?.session) {
                 setSession(data.session);
                 setUser(data.session.user);
+                if (type === 'recovery') {
+                  setAuthScreen('reset-password');
+                } else {
+                  setAuthScreen('confirm-email');
+                }
               }
             } catch (err) {
               console.warn('Token hash verify note:', err);
             }
           }
-
-          // Clean up hash/search if tokens were processed
-          if (
-            window.location.hash.includes('access_token') ||
-            window.location.search.includes('code=') ||
-            window.location.search.includes('token_hash=')
-          ) {
-            const cleanUrl = window.location.origin + window.location.pathname;
-            window.history.replaceState({}, document.title, cleanUrl);
-          }
         }
 
-        // 2. Fetch current session
+        // 3. Fetch active session
         const { data: { session: activeSession }, error } = await supabase.auth.getSession();
         if (error) {
           console.error('Error fetching Supabase session:', error);
@@ -96,14 +133,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     handleInitialAuth();
 
-    // 3. Listen for auth changes (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, USER_UPDATED, etc.)
+    // 4. Listen for auth changes (PASSWORD_RECOVERY, SIGNED_IN, SIGNED_OUT, USER_UPDATED, etc.)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, currentSession) => {
         setSession(currentSession);
         setUser(currentSession?.user ?? null);
         setLoading(false);
 
-        // Whenever a user is confirmed/signed in, ensure public.profiles record is updated
+        if (event === 'PASSWORD_RECOVERY') {
+          setAuthScreen('reset-password');
+        }
+
+        // Sync profile record on authentication events
         if (currentSession?.user && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'USER_UPDATED')) {
           try {
             await supabase.from('profiles').upsert({
@@ -143,9 +184,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (error.message.includes('Invalid login credentials')) {
           msg = 'E-mail ou senha incorretos.';
         } else if (error.message.includes('Email not confirmed')) {
-          msg = 'E-mail ainda não confirmado. Verifique sua caixa de entrada e clique no link de confirmação.';
+          msg = 'E-mail ainda não confirmado. Verifique sua caixa de entrada e clique no link de confirmação para ativar sua conta.';
         } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-          msg = 'Erro de conexão com o Supabase ("Failed to fetch"). Verifique se a URL do projeto está no formato https://<id>.supabase.co';
+          msg = 'Erro de conexão com o Supabase. Verifique sua conexão ou se a URL está correta.';
         }
         setAuthError(msg);
         return { error };
@@ -159,7 +200,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { error: null };
     } catch (err: any) {
       const msg = err.message?.includes('Failed to fetch')
-        ? 'Falha ao conectar com o servidor do Supabase. Verifique a URL configurada.'
+        ? 'Falha ao conectar com o servidor do Supabase.'
         : (err.message || 'Erro ao realizar login.');
       setAuthError(msg);
       return { error: err };
@@ -169,12 +210,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signUp = async (email: string, password: string, name: string) => {
     setAuthError(null);
     if (!isSupabaseConfigured || !supabase) {
-      const msg = supabaseConfigError || 'Supabase não configurado corretamente no projeto.';
+      const msg = supabaseConfigError || 'Supabase não configurado.';
       setAuthError(msg);
       return { error: new Error(msg) };
     }
 
-    const redirectUrl = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const redirectUrl = getAuthRedirectUrl('/confirmar-email');
 
     try {
       const { data, error } = await supabase.auth.signUp({
@@ -192,14 +233,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         let msg = error.message;
         if (error.message.includes('User already registered')) {
           msg = 'Este e-mail já possui cadastro. Faça login.';
-        } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-          msg = 'Erro de rede ("Failed to fetch") ao acessar o Supabase. Verifique se a variável VITE_SUPABASE_URL é a Project URL válida (https://<ref>.supabase.co).';
+        } else if (error.message.includes('Password should be at least')) {
+          msg = 'A senha deve conter pelo menos 6 caracteres.';
         }
         setAuthError(msg);
         return { error };
       }
 
-      // If user signed up and session is immediately active, also upsert profile as safety fallback
+      // Upsert initial profile
       if (data?.user) {
         try {
           await supabase.from('profiles').upsert({
@@ -209,15 +250,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             updated_at: new Date().toISOString(),
           }, { onConflict: 'id' });
         } catch (profileErr) {
-          console.warn('Profile fallback upsert note (handled by trigger):', profileErr);
+          console.warn('Profile fallback upsert note:', profileErr);
         }
       }
 
-      return { error: null };
+      return { error: null, user: data?.user };
     } catch (err: any) {
-      const msg = err.message?.includes('Failed to fetch')
-        ? 'Falha de conexão com o Supabase ("Failed to fetch"). Verifique a URL do seu projeto Supabase.'
-        : (err.message || 'Erro ao realizar cadastro.');
+      const msg = err.message || 'Erro ao realizar cadastro.';
       setAuthError(msg);
       return { error: err };
     }
@@ -231,7 +270,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { error: new Error(msg) };
     }
 
-    const redirectUrl = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const redirectUrl = getAuthRedirectUrl('/confirmar-email');
 
     try {
       const { error } = await supabase.auth.resend({
@@ -271,7 +310,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { error: new Error(msg) };
     }
 
-    const redirectUrl = typeof window !== 'undefined' ? window.location.origin : undefined;
+    const redirectUrl = getAuthRedirectUrl('/redefinir-senha');
 
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
@@ -288,6 +327,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const updatePassword = async (password: string) => {
+    setAuthError(null);
+    if (!isSupabaseConfigured || !supabase) {
+      const msg = supabaseConfigError || 'Supabase não configurado.';
+      setAuthError(msg);
+      return { error: new Error(msg) };
+    }
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password,
+      });
+
+      if (error) {
+        setAuthError(error.message);
+        return { error };
+      }
+
+      return { error: null };
+    } catch (err: any) {
+      setAuthError(err.message || 'Erro ao atualizar a senha.');
+      return { error: err };
+    }
+  };
+
   const clearError = () => setAuthError(null);
 
   return (
@@ -299,10 +363,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isConfigured: isSupabaseConfigured,
         configError: supabaseConfigError,
         authError,
+        authScreen,
+        setAuthScreen,
         signIn,
         signUp,
         signOut,
         resetPassword,
+        updatePassword,
         resendConfirmation,
         clearError,
       }}
@@ -319,4 +386,3 @@ export const useAuth = () => {
   }
   return context;
 };
-
