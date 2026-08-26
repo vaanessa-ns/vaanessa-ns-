@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
@@ -131,33 +132,50 @@ export const SUPPORTED_INSTITUTIONS: BankConnector[] = [
 let cachedPluggyApiKey: { key: string; expiresAt: number } | null = null;
 
 export function getSanitizedCredentials() {
-  const rawId = process.env.PLUGGY_CLIENT_ID || '';
+  const rawId = process.env.PLUGGY_CLIENT_ID || process.env.VITE_PLUGGY_CLIENT_ID || '';
   const rawSecret = process.env.PLUGGY_CLIENT_SECRET || '';
   const clientId = rawId.replace(/^["']|["']$/g, '').trim();
   const clientSecret = rawSecret.replace(/^["']|["']$/g, '').trim();
   return { clientId, clientSecret };
 }
 
+export function getSanitizedRedirectUri(override?: string) {
+  const envUri = (process.env.PLUGGY_OAUTH_REDIRECT_URI || '').replace(/^["']|["']$/g, '').trim();
+  if (envUri) return envUri;
+  if (override) return override.replace(/^["']|["']$/g, '').trim();
+  return 'https://vaanessa-ns.vercel.app';
+}
+
 /**
  * Autentica com a Pluggy usando PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET (apenas no servidor)
  * POST https://api.pluggy.ai/auth
  */
-export async function getPluggyApiKey(): Promise<string | null> {
+export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?: string; status?: number }> {
   const { clientId, clientSecret } = getSanitizedCredentials();
 
   if (!clientId || !clientSecret) {
-    return null;
+    console.warn('[Pluggy Backend Auth] PLUGGY_CLIENT_ID ou PLUGGY_CLIENT_SECRET não configurados no ambiente do servidor.');
+    return {
+      apiKey: null,
+      error: 'Variáveis de ambiente PLUGGY_CLIENT_ID ou PLUGGY_CLIENT_SECRET não configuradas no servidor.',
+      status: 401,
+    };
   }
 
   const now = Date.now();
   if (cachedPluggyApiKey && cachedPluggyApiKey.expiresAt > now + 60000) {
-    return cachedPluggyApiKey.key;
+    return { apiKey: cachedPluggyApiKey.key };
   }
+
+  console.log(`[Pluggy Backend Auth] [Etapa 1/2] Iniciando autenticação em https://api.pluggy.ai/auth (ID configurado: ${Boolean(clientId)}, Secret configurado: ${Boolean(clientSecret)})...`);
 
   try {
     const res = await fetch('https://api.pluggy.ai/auth', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
       body: JSON.stringify({
         clientId,
         clientSecret,
@@ -165,28 +183,61 @@ export async function getPluggyApiKey(): Promise<string | null> {
     });
 
     if (!res.ok) {
-      const errorBody = await res.text();
-      console.warn(`Pluggy /auth failed with status ${res.status}:`, errorBody);
-      return null;
+      let errorMsg = `HTTP ${res.status}`;
+      try {
+        const errorJson = await res.json();
+        errorMsg = errorJson?.message || errorJson?.codeDescription || JSON.stringify(errorJson);
+      } catch {
+        const errorText = await res.text().catch(() => '');
+        if (errorText) errorMsg = errorText;
+      }
+      console.warn(`[Pluggy Backend Auth] [Etapa 1/2] Falha na autenticação (HTTP ${res.status}): ${errorMsg}`);
+      return {
+        apiKey: null,
+        error: `Falha na autenticação com a Pluggy (HTTP ${res.status}): ${errorMsg}`,
+        status: res.status,
+      };
     }
 
     const data = (await res.json()) as PluggyAuthResponse;
     if (data?.apiKey) {
+      console.log('[Pluggy Backend Auth] [Etapa 1/2] Autenticação bem-sucedida. API Key obtida com sucesso.');
       cachedPluggyApiKey = {
         key: data.apiKey,
-        expiresAt: now + 100 * 60 * 1000, // ~100 minutes (Pluggy token duration is typically 2 hours)
+        expiresAt: now + 100 * 60 * 1000, // ~100 minutos (duração do token da Pluggy é de ~2 horas)
       };
-      return data.apiKey;
+      return { apiKey: data.apiKey };
+    } else {
+      console.warn('[Pluggy Backend Auth] [Etapa 1/2] Resposta da Pluggy não continha o campo apiKey.');
+      return {
+        apiKey: null,
+        error: 'Resposta da Pluggy não retornou a chave de API.',
+        status: 500,
+      };
     }
-  } catch (err) {
-    console.error('Error authenticating with Pluggy:', err);
+  } catch (err: any) {
+    console.error('[Pluggy Backend Auth] [Etapa 1/2] Erro de rede/comunicação ao conectar com api.pluggy.ai/auth:', err?.message || err);
+    return {
+      apiKey: null,
+      error: `Erro ao conectar com api.pluggy.ai/auth: ${err?.message || 'Falha de rede'}`,
+      status: 500,
+    };
   }
-
-  return null;
 }
 
 export function getSupportedInstitutions(): BankConnector[] {
   return SUPPORTED_INSTITUTIONS;
+}
+
+export interface PluggyConnectTokenResult {
+  success: boolean;
+  accessToken: string;
+  connectToken: string;
+  provider: 'pluggy' | 'sandbox';
+  sandbox: boolean;
+  error?: string;
+  step?: 'auth' | 'connect_token' | 'config' | 'network';
+  status?: number;
 }
 
 /**
@@ -198,49 +249,51 @@ export async function createPluggyConnectToken(options?: {
   clientUserId?: string;
   oauthRedirectUri?: string;
   connectorId?: number;
-}): Promise<{
-  accessToken: string;
-  connectToken: string;
-  provider: 'pluggy' | 'sandbox';
-  sandbox: boolean;
-  error?: string;
-}> {
-  const apiKey = await getPluggyApiKey();
+}): Promise<PluggyConnectTokenResult> {
+  const authResult = await getPluggyApiKey();
 
-  if (!apiKey) {
-    // Generate fallback session token if credentials are not yet set
-    const sandboxToken = `sandbox_token_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  if (!authResult.apiKey) {
+    console.log('[Pluggy Backend ConnectToken] Sem API Key válida. Retornando erro estruturado em formato JSON.');
     return {
-      accessToken: sandboxToken,
-      connectToken: sandboxToken,
-      provider: 'sandbox',
-      sandbox: true,
-      error: 'PLUGGY_CLIENT_ID ou PLUGGY_CLIENT_SECRET não configurados no servidor.',
+      success: false,
+      accessToken: '',
+      connectToken: '',
+      provider: 'pluggy',
+      sandbox: false,
+      error: authResult.error || 'Não foi possível autenticar no serviço da Pluggy.',
+      step: 'auth',
+      status: authResult.status || 401,
     };
   }
 
-  try {
-    const redirectUri =
-      options?.oauthRedirectUri ||
-      process.env.PLUGGY_OAUTH_REDIRECT_URI ||
-      'https://vaanessa-ns.vercel.app';
+  const apiKey = authResult.apiKey;
 
-    const payload: any = {
-      options: {
-        clientUserId: options?.clientUserId || undefined,
-        oauthRedirectUri: redirectUri,
-        products: ['ACCOUNTS', 'TRANSACTIONS', 'CREDIT_CARDS', 'PAYMENT_DATA', 'INVESTMENTS'],
-      },
+  try {
+    console.log('[Pluggy Backend ConnectToken] [Etapa 2/2] Gerando Connect Token em https://api.pluggy.ai/connect_token com header X-API-KEY...');
+
+    const redirectUri = getSanitizedRedirectUri(options?.oauthRedirectUri);
+
+    const payload: any = {};
+
+    const optionsObj: any = {
+      oauthRedirectUri: redirectUri,
     };
 
+    if (options?.clientUserId) {
+      optionsObj.clientUserId = String(options.clientUserId);
+    }
+
+    payload.options = optionsObj;
+
     if (options?.itemId) {
-      payload.itemId = options.itemId;
+      payload.itemId = String(options.itemId);
     }
 
     const res = await fetch('https://api.pluggy.ai/connect_token', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
         'X-API-KEY': apiKey,
       },
       body: JSON.stringify(payload),
@@ -248,64 +301,137 @@ export async function createPluggyConnectToken(options?: {
 
     if (res.ok) {
       const data = (await res.json()) as PluggyConnectTokenResponse;
-      const token = data.accessToken;
+      const token = data?.accessToken || '';
+      console.log(`[Pluggy Backend ConnectToken] [Etapa 2/2] Connect Token gerado com sucesso (tamanho: ${token.length} chars).`);
       return {
+        success: true,
         accessToken: token,
         connectToken: token,
         provider: 'pluggy',
         sandbox: false,
+        status: 200,
       };
     } else {
-      const errorText = await res.text();
-      console.warn(`Pluggy /connect_token failed (${res.status}):`, errorText);
+      let errorDetail = `HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        errorDetail = errJson?.message || errJson?.codeDescription || JSON.stringify(errJson);
+      } catch {
+        const errText = await res.text().catch(() => '');
+        if (errText) errorDetail = errText;
+      }
+      console.warn(`[Pluggy Backend ConnectToken] [Etapa 2/2] Erro na Pluggy (${res.status}):`, errorDetail);
       return {
+        success: false,
         accessToken: '',
         connectToken: '',
         provider: 'pluggy',
         sandbox: false,
-        error: `Erro ao gerar token na Pluggy (${res.status}): ${errorText}`,
+        error: `Erro ao gerar Connect Token na Pluggy (HTTP ${res.status}): ${errorDetail}`,
+        step: 'connect_token',
+        status: res.status,
       };
     }
   } catch (e: any) {
-    console.error('Error fetching Pluggy connect token:', e);
+    console.error('[Pluggy Backend ConnectToken] [Etapa 2/2] Exceção durante requisição de Connect Token:', e?.message || e);
     return {
+      success: false,
       accessToken: '',
       connectToken: '',
       provider: 'pluggy',
       sandbox: false,
-      error: e.message || 'Falha de comunicação com api.pluggy.ai',
+      error: `Falha de comunicação com api.pluggy.ai: ${e?.message || 'Erro de conexão'}`,
+      step: 'network',
+      status: 500,
     };
   }
 }
 
 /**
  * Consulta dados reais da Pluggy pelo itemId (usando X-API-KEY do servidor)
- * Normaliza contas, transações, saldos e cartões no formato esperado pelo Vfinance
+ * Normaliza contas, transações, saldos, cartões e PIX no formato esperado pelo VFinance
  */
-export async function fetchPluggyItemData(itemId: string) {
-  const apiKey = await getPluggyApiKey();
-  if (!apiKey) return null;
+export async function fetchPluggyItemData(itemId: string): Promise<{
+  success: boolean;
+  data?: any;
+  error?: string;
+  status?: number;
+}> {
+  const authResult = await getPluggyApiKey();
+  const apiKey = authResult.apiKey;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: authResult.error || 'Credenciais Pluggy não configuradas no servidor.',
+      status: 401,
+    };
+  }
 
   try {
+    console.log(`[Pluggy Backend Sync] Consultando dados reais do Item ${itemId} na Pluggy...`);
+
     // 1. Fetch Item details
     const itemRes = await fetch(`https://api.pluggy.ai/items/${itemId}`, {
-      headers: { 'X-API-KEY': apiKey },
+      headers: {
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
     });
-    const item = itemRes.ok ? await itemRes.json() : null;
 
-    // 2. Fetch Accounts
-    const accountsRes = await fetch(`https://api.pluggy.ai/accounts?itemId=${itemId}`, {
-      headers: { 'X-API-KEY': apiKey },
-    });
-    const accountsData = accountsRes.ok ? await accountsRes.json() : { results: [] };
-    const rawAccounts = accountsData.results || [];
+    if (!itemRes.ok) {
+      let errDetail = `HTTP ${itemRes.status}`;
+      try {
+        const errJson = await itemRes.json();
+        errDetail = errJson?.message || errJson?.codeDescription || JSON.stringify(errJson);
+      } catch {}
+      console.warn(`[Pluggy Backend Sync] Falha ao consultar Item ${itemId} (${itemRes.status}):`, errDetail);
+      return {
+        success: false,
+        error: `Falha ao obter dados do item na Pluggy: ${errDetail}`,
+        status: itemRes.status,
+      };
+    }
 
-    // 3. Fetch Bills (Invoices)
+    const item = await itemRes.json();
+
+    // 2. Fetch Accounts (with retry if the connector is still syncing initial data)
+    let rawAccounts: any[] = [];
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      const accountsRes = await fetch(`https://api.pluggy.ai/accounts?itemId=${itemId}`, {
+        headers: {
+          'Accept': 'application/json',
+          'X-API-KEY': apiKey,
+        },
+      });
+
+      if (accountsRes.ok) {
+        const accountsData = await accountsRes.json();
+        rawAccounts = accountsData?.results || [];
+        if (rawAccounts.length > 0 || item?.status === 'UPDATED' || attempts >= maxAttempts) {
+          break;
+        }
+      }
+
+      // Wait 1.5 seconds before retrying if initial accounts are still processing
+      if (attempts < maxAttempts) {
+        console.log(`[Pluggy Backend Sync] Aguardando processamento das contas (tentativa ${attempts}/${maxAttempts})...`);
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+
+    // 3. Fetch Bills (Invoices / Cartão de crédito)
     const billsRes = await fetch(`https://api.pluggy.ai/bills?itemId=${itemId}`, {
-      headers: { 'X-API-KEY': apiKey },
+      headers: {
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
     });
     const billsData = billsRes.ok ? await billsRes.json() : { results: [] };
-    const rawBills = billsData.results || [];
+    const rawBills = billsData?.results || [];
 
     // 4. Fetch Transactions for each account
     const accountsWithTransactions = await Promise.all(
@@ -313,12 +439,17 @@ export async function fetchPluggyItemData(itemId: string) {
         try {
           const txRes = await fetch(
             `https://api.pluggy.ai/transactions?accountId=${acc.id}&pageSize=100`,
-            { headers: { 'X-API-KEY': apiKey } }
+            {
+              headers: {
+                'Accept': 'application/json',
+                'X-API-KEY': apiKey,
+              },
+            }
           );
           const txData = txRes.ok ? await txRes.json() : { results: [] };
           return {
             ...acc,
-            rawTransactions: txData.results || [],
+            rawTransactions: txData?.results || [],
           };
         } catch {
           return { ...acc, rawTransactions: [] };
@@ -331,9 +462,9 @@ export async function fetchPluggyItemData(itemId: string) {
     const institutionId = String(item?.connector?.id || '0');
     const institutionLogo = item?.connector?.imageUrl || null;
 
-    // Map Normalized Accounts
+    // Map Normalized Bank Accounts (Checking, Savings, Investment)
     const normalizedAccounts = accountsWithTransactions
-      .filter((acc: any) => acc.type !== 'CREDIT')
+      .filter((acc: any) => acc.type !== 'CREDIT' && acc.subtype !== 'CREDIT_CARD')
       .map((acc: any) => {
         const mappedType =
           acc.type === 'SAVINGS' || acc.subtype === 'SAVINGS_ACCOUNT'
@@ -348,15 +479,21 @@ export async function fetchPluggyItemData(itemId: string) {
           const amountNum = Math.abs(typeof tx.amount === 'number' ? tx.amount : parseFloat(tx.amount || '0'));
           const isCredit = tx.type === 'CREDIT' || (typeof tx.amount === 'number' && tx.amount > 0 && tx.type !== 'DEBIT');
           const txDate = tx.date ? tx.date.split('T')[0] : new Date().toISOString().split('T')[0];
+          const desc = tx.description || tx.descriptionRaw || 'Movimentação Bancária';
+          const isPix =
+            tx.paymentData?.paymentMethod?.toUpperCase() === 'PIX' ||
+            desc.toLowerCase().includes('pix') ||
+            desc.toLowerCase().includes('transf. pix');
 
           return {
             id: tx.id || `tx_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             providerTransactionId: tx.id || `ptx_${Date.now()}`,
-            description: tx.description || tx.descriptionRaw || 'Movimentação Bancária',
+            description: desc,
             amount: amountNum,
             transactionType: isCredit ? 'CREDIT' : 'DEBIT',
             category: typeof tx.category === 'string' ? tx.category : (tx.category?.name || 'Outros'),
             transactionDate: txDate,
+            paymentMethod: isPix ? 'PIX' : (isCredit ? 'TRANSFER' : 'DEBIT_CARD'),
             status: tx.status === 'PENDING' ? 'PENDING' : 'POSTED',
           };
         });
@@ -415,39 +552,656 @@ export async function fetchPluggyItemData(itemId: string) {
       };
     });
 
+    console.log(`[Pluggy Backend Sync] Item ${itemId} processado: ${normalizedAccounts.length} contas, ${normalizedCards.length} cartões.`);
+
     return {
-      connection: {
-        providerItemId: String(itemId),
-        provider: 'pluggy',
-        institutionId,
-        institutionName,
-        institutionLogo,
-        status: item?.status || 'UPDATED',
-        consentStatus: 'ACTIVE',
-        lastSyncAt: new Date().toISOString(),
+      success: true,
+      data: {
+        connection: {
+          providerItemId: String(itemId),
+          provider: 'pluggy',
+          institutionId,
+          institutionName,
+          institutionLogo,
+          status: item?.status || 'UPDATED',
+          consentStatus: 'ACTIVE',
+          lastSyncAt: new Date().toISOString(),
+        },
+        accounts: normalizedAccounts,
+        cards: normalizedCards,
       },
-      accounts: normalizedAccounts,
-      cards: normalizedCards,
     };
+  } catch (err: any) {
+    console.error('[Pluggy Backend Sync] Erro ao sincronizar dados da Pluggy:', err?.message || err);
+    return {
+      success: false,
+      error: `Erro ao consultar dados da Pluggy: ${err?.message || 'Falha de comunicação'}`,
+      status: 500,
+    };
+  }
+}
+
+// -------------------------------------------------------------
+// SUPABASE BACKEND SYNC HELPER
+// -------------------------------------------------------------
+export function getServerSupabaseClient(): SupabaseClient | null {
+  const rawUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+  const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
+
+  if (!rawUrl || !rawKey) {
+    return null;
+  }
+
+  let normalizedUrl = rawUrl.trim();
+  if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+    normalizedUrl = `https://${normalizedUrl}`;
+  }
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    return createClient(parsed.origin, rawKey.trim(), {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
   } catch (err) {
-    console.error('Error fetching Pluggy data:', err);
+    console.warn('[Server Supabase] Falha ao criar cliente Supabase no backend:', err);
     return null;
   }
 }
 
-export async function deletePluggyItem(itemId: string): Promise<boolean> {
-  const apiKey = await getPluggyApiKey();
-  if (!apiKey) return true;
+/**
+ * Sincroniza dados normalizados da Pluggy diretamente nas tabelas do Supabase
+ * do usuário proprietário do itemId (bank_connections, bank_accounts, accounts, bank_transactions, transactions, credit_cards)
+ */
+export async function syncPluggyDataToSupabase(payload: any): Promise<{
+  success: boolean;
+  userId?: string;
+  connectionId?: string;
+  error?: string;
+  status?: string;
+}> {
+  const supabase = getServerSupabaseClient();
+  if (!supabase) {
+    console.log('[Supabase Server Sync] Supabase não configurado ou indisponível no servidor.');
+    return { success: false, error: 'Supabase client unavailable' };
+  }
+
+  const itemId = payload?.connection?.providerItemId;
+  if (!itemId) {
+    return { success: false, error: 'No providerItemId found in payload' };
+  }
+
+  try {
+    // 1. Encontrar o vínculo existente pelo provider_item_id
+    const { data: existingConn, error: connErr } = await supabase
+      .from('bank_connections')
+      .select('*')
+      .eq('provider_item_id', String(itemId))
+      .maybeSingle();
+
+    if (connErr) {
+      console.warn('[Supabase Server Sync] Erro ao consultar bank_connections:', connErr.message);
+    }
+
+    if (!existingConn) {
+      console.log(`[Supabase Server Sync] Conexão com itemId ${itemId} ainda não possui vínculo de usuário registrado no Supabase.`);
+      return { success: true, status: 'NO_USER_MAPPED_YET' };
+    }
+
+    const userId = existingConn.user_id;
+    const connectionId = existingConn.id;
+    const nowIso = new Date().toISOString();
+
+    // 2. Atualizar status e timestamp em bank_connections
+    await supabase
+      .from('bank_connections')
+      .update({
+        status: payload.connection.status || 'UPDATED',
+        consent_status: payload.connection.consentStatus || 'ACTIVE',
+        last_sync_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq('id', connectionId);
+
+    // 3. Atualizar/Inserir contas bancárias
+    if (payload.accounts && Array.isArray(payload.accounts)) {
+      for (const acc of payload.accounts) {
+        const mappedType =
+          acc.accountType === 'SAVINGS'
+            ? 'savings'
+            : acc.accountType === 'INVESTMENT'
+            ? 'investment'
+            : 'checking';
+
+        const { data: existingBankAcc } = await supabase
+          .from('bank_accounts')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('provider_account_id', String(acc.providerAccountId))
+          .maybeSingle();
+
+        const accId = existingBankAcc?.id || `acc_p_${String(acc.providerAccountId).slice(-8)}_${Date.now()}`;
+
+        // Upsert em bank_accounts
+        await supabase.from('bank_accounts').upsert({
+          id: accId,
+          user_id: userId,
+          bank_connection_id: connectionId,
+          provider_account_id: String(acc.providerAccountId),
+          institution_name: acc.institutionName,
+          account_name: acc.accountName,
+          account_type: acc.accountType,
+          account_number_masked: acc.accountNumberMasked,
+          balance: Number(acc.balance || 0),
+          currency: acc.currency || 'BRL',
+          updated_at: nowIso,
+        });
+
+        // Upsert em accounts (visão geral do dashboard)
+        await supabase.from('accounts').upsert({
+          id: accId,
+          user_id: userId,
+          name: acc.accountName,
+          bank: acc.institutionName,
+          type: mappedType,
+          balance: Number(acc.balance || 0),
+          updated_at: nowIso,
+        });
+
+        // 4. Inserir/Atualizar transações da conta
+        if (acc.transactions && Array.isArray(acc.transactions)) {
+          for (const tx of acc.transactions) {
+            const txType = tx.transactionType === 'CREDIT' ? 'income' : 'expense';
+            const provTxId = String(tx.providerTransactionId || tx.id);
+
+            const { data: existingTx } = await supabase
+              .from('bank_transactions')
+              .select('id')
+              .eq('user_id', userId)
+              .eq('provider_transaction_id', provTxId)
+              .maybeSingle();
+
+            const txId = existingTx?.id || `tx_p_${provTxId.slice(-10)}_${Date.now()}`;
+
+            await supabase.from('bank_transactions').upsert({
+              id: txId,
+              user_id: userId,
+              bank_account_id: accId,
+              provider_transaction_id: provTxId,
+              description: tx.description,
+              amount: Number(tx.amount || 0),
+              transaction_type: tx.transactionType,
+              category: tx.category,
+              transaction_date: tx.transactionDate,
+              status: tx.status || 'POSTED',
+              updated_at: nowIso,
+            });
+
+            await supabase.from('transactions').upsert({
+              id: txId,
+              user_id: userId,
+              type: txType,
+              description: tx.description,
+              amount: Number(tx.amount || 0),
+              category: tx.category,
+              date: tx.transactionDate,
+              payment_method: tx.paymentMethod === 'PIX' ? 'pix' : 'transfer',
+              account_id: accId,
+              recurrence: 'none',
+              is_paid: true,
+              updated_at: nowIso,
+            });
+          }
+        }
+      }
+    }
+
+    // 5. Atualizar/Inserir cartões de crédito
+    if (payload.cards && Array.isArray(payload.cards)) {
+      for (const card of payload.cards) {
+        const { data: existingCard } = await supabase
+          .from('credit_cards')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('name', card.cardName)
+          .maybeSingle();
+
+        const cardId = existingCard?.id || `card_p_${Date.now()}`;
+
+        await supabase.from('credit_cards').upsert({
+          id: cardId,
+          user_id: userId,
+          name: card.cardName,
+          bank: card.institutionName,
+          total_limit: Number(card.creditLimit || 0),
+          closing_day: 20,
+          due_day: 28,
+          color: card.institutionName?.toLowerCase().includes('nubank') ? '#820AD1' : '#10B981',
+          last_digits: card.lastFourDigits,
+          brand: 'mastercard',
+          updated_at: nowIso,
+        });
+      }
+    }
+
+    console.log(`[Supabase Server Sync] Dados do Item ${itemId} sincronizados com sucesso no Supabase para o usuário ${userId}.`);
+    return { success: true, userId, connectionId };
+  } catch (err: any) {
+    console.error('[Supabase Server Sync] Erro durante sincronização no Supabase:', err?.message || err);
+    return { success: false, error: err?.message };
+  }
+}
+
+// -------------------------------------------------------------
+// PLUGGY WEBHOOKS MANAGEMENT & EVENT PROCESSING
+// -------------------------------------------------------------
+
+export interface WebhookLogEntry {
+  id: string;
+  event: string;
+  itemId?: string;
+  timestamp: string;
+  status: 'PROCESSED' | 'SKIPPED_DUPLICATE' | 'ERROR' | 'NO_ITEM';
+  message?: string;
+}
+
+// Idempotência em memória (armazena últimos IDs processados por até 30 minutos)
+const processedEventIds = new Map<string, number>();
+const webhookEventLogs: WebhookLogEntry[] = [];
+
+function cleanOldProcessedEvents() {
+  const thirtyMinutesAgo = Date.now() - 30 * 60 * 1000;
+  for (const [id, time] of processedEventIds.entries()) {
+    if (time < thirtyMinutesAgo) {
+      processedEventIds.delete(id);
+    }
+  }
+  if (webhookEventLogs.length > 100) {
+    webhookEventLogs.splice(0, webhookEventLogs.length - 100);
+  }
+}
+
+export function getRecentWebhookLogs(): WebhookLogEntry[] {
+  return [...webhookEventLogs].reverse();
+}
+
+/**
+ * Registra o Webhook oficial na API da Pluggy
+ * POST https://api.pluggy.ai/webhooks
+ * Body: { event: "all", url: "https://vaanessa-ns.vercel.app/api/pluggy/webhook" }
+ */
+export async function registerPluggyWebhook(
+  webhookUrl?: string,
+  event: string = 'all'
+): Promise<{
+  success: boolean;
+  webhook?: any;
+  error?: string;
+  status?: number;
+}> {
+  const authResult = await getPluggyApiKey();
+  const apiKey = authResult.apiKey;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: authResult.error || 'Credenciais Pluggy não configuradas.',
+      status: 401,
+    };
+  }
+
+  const targetUrl = webhookUrl || 'https://vaanessa-ns.vercel.app/api/pluggy/webhook';
+
+  try {
+    console.log(`[Pluggy Webhook Manager] Registrando Webhook na Pluggy: ${targetUrl} (Evento: ${event})...`);
+
+    const res = await fetch('https://api.pluggy.ai/webhooks', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
+      body: JSON.stringify({
+        url: targetUrl,
+        event: event,
+      }),
+    });
+
+    if (!res.ok) {
+      let errDetail = `HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        errDetail = errJson?.message || errJson?.codeDescription || JSON.stringify(errJson);
+      } catch {}
+      console.warn(`[Pluggy Webhook Manager] Falha ao registrar webhook (${res.status}):`, errDetail);
+      return {
+        success: false,
+        error: `Falha ao registrar webhook na Pluggy: ${errDetail}`,
+        status: res.status,
+      };
+    }
+
+    const data = await res.json();
+    console.log(`[Pluggy Webhook Manager] Webhook registrado com sucesso na Pluggy! ID: ${data?.id || 'OK'}`);
+    return {
+      success: true,
+      webhook: data,
+    };
+  } catch (err: any) {
+    console.error('[Pluggy Webhook Manager] Erro ao registrar webhook:', err?.message || err);
+    return {
+      success: false,
+      error: `Erro ao conectar com api.pluggy.ai/webhooks: ${err?.message || 'Falha de comunicação'}`,
+      status: 500,
+    };
+  }
+}
+
+/**
+ * Consulta lista de webhooks cadastrados na Pluggy
+ * GET https://api.pluggy.ai/webhooks
+ */
+export async function listPluggyWebhooks(): Promise<{
+  success: boolean;
+  webhooks?: any[];
+  error?: string;
+  status?: number;
+}> {
+  const authResult = await getPluggyApiKey();
+  const apiKey = authResult.apiKey;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: authResult.error || 'Credenciais Pluggy não configuradas.',
+      status: 401,
+    };
+  }
+
+  try {
+    const res = await fetch('https://api.pluggy.ai/webhooks', {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
+    });
+
+    if (!res.ok) {
+      let errDetail = `HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        errDetail = errJson?.message || errJson?.codeDescription || JSON.stringify(errJson);
+      } catch {}
+      return {
+        success: false,
+        error: `Falha ao consultar webhooks: ${errDetail}`,
+        status: res.status,
+      };
+    }
+
+    const data = await res.json();
+    const results = data?.results || (Array.isArray(data) ? data : []);
+    return {
+      success: true,
+      webhooks: results,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Falha ao consultar webhooks na Pluggy',
+      status: 500,
+    };
+  }
+}
+
+/**
+ * Deleta um webhook na Pluggy
+ * DELETE https://api.pluggy.ai/webhooks/:id
+ */
+export async function deletePluggyWebhook(webhookId: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  const authResult = await getPluggyApiKey();
+  const apiKey = authResult.apiKey;
+  if (!apiKey) {
+    return { success: false, error: 'Credenciais Pluggy não configuradas.' };
+  }
+
+  try {
+    const res = await fetch(`https://api.pluggy.ai/webhooks/${webhookId}`, {
+      method: 'DELETE',
+      headers: {
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
+    });
+    return { success: res.ok };
+  } catch (err: any) {
+    return { success: false, error: err?.message };
+  }
+}
+
+/**
+ * Deleta ou revoga um Item na Pluggy
+ * DELETE https://api.pluggy.ai/items/:id
+ */
+export async function deletePluggyItem(itemId: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  if (!itemId || itemId.startsWith('sandbox_')) {
+    return { success: true };
+  }
+
+  const authResult = await getPluggyApiKey();
+  const apiKey = authResult.apiKey;
+  if (!apiKey) {
+    return { success: false, error: 'Credenciais Pluggy não configuradas.' };
+  }
 
   try {
     const res = await fetch(`https://api.pluggy.ai/items/${itemId}`, {
       method: 'DELETE',
-      headers: { 'X-API-KEY': apiKey },
+      headers: {
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
     });
-    return res.ok;
-  } catch (e) {
-    console.error('Error deleting Pluggy item:', e);
-    return false;
+    return { success: res.ok };
+  } catch (err: any) {
+    return { success: false, error: err?.message };
+  }
+}
+
+/**
+ * Processador oficial de eventos de Webhook recebidos da Pluggy
+ * Trata: item/created, item/updated, item/error, item/deleted, transactions/created, transactions/updated, transactions/deleted
+ */
+export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
+  success: boolean;
+  eventId?: string;
+  event?: string;
+  itemId?: string;
+  message: string;
+  duplicate?: boolean;
+}> {
+  cleanOldProcessedEvents();
+
+  const eventPayload = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : (rawPayload || {});
+  const eventId = String(eventPayload.id || eventPayload.eventId || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+  const eventType = String(eventPayload.event || eventPayload.type || 'unknown');
+  const itemId = String(eventPayload.itemId || eventPayload.data?.itemId || eventPayload.data?.id || '');
+
+  // 1. Verificação de Idempotência
+  if (processedEventIds.has(eventId)) {
+    console.log(`[Pluggy Webhook Handler] Evento ${eventId} (${eventType}) já foi processado anteriormente. Ignorando duplicata.`);
+    const log: WebhookLogEntry = {
+      id: eventId,
+      event: eventType,
+      itemId,
+      timestamp: new Date().toISOString(),
+      status: 'SKIPPED_DUPLICATE',
+      message: 'Evento duplicado ignorado por idempotência.',
+    };
+    webhookEventLogs.push(log);
+    return {
+      success: true,
+      eventId,
+      event: eventType,
+      itemId,
+      message: 'Evento duplicado ignorado.',
+      duplicate: true,
+    };
+  }
+
+  processedEventIds.set(eventId, Date.now());
+
+  console.log(`[Pluggy Webhook Handler] Processando evento: ${eventType} | itemId: ${itemId || 'N/A'} | eventId: ${eventId}`);
+
+  try {
+    // 2. Tratar eventos específicos
+    switch (eventType) {
+      case 'item/created':
+      case 'item/updated':
+      case 'transactions/created':
+      case 'transactions/updated': {
+        if (!itemId) {
+          const log: WebhookLogEntry = {
+            id: eventId,
+            event: eventType,
+            timestamp: new Date().toISOString(),
+            status: 'NO_ITEM',
+            message: 'Evento recebido sem itemId válido.',
+          };
+          webhookEventLogs.push(log);
+          return { success: true, eventId, event: eventType, message: 'Evento recebido sem itemId.' };
+        }
+
+        // Buscar dados atualizados na Pluggy
+        const realResult = await fetchPluggyItemData(itemId);
+        if (realResult.success && realResult.data) {
+          // Sincronizar com Supabase se houver usuário vinculado
+          await syncPluggyDataToSupabase(realResult.data);
+        }
+
+        const log: WebhookLogEntry = {
+          id: eventId,
+          event: eventType,
+          itemId,
+          timestamp: new Date().toISOString(),
+          status: 'PROCESSED',
+          message: `Item ${itemId} sincronizado com sucesso (${eventType}).`,
+        };
+        webhookEventLogs.push(log);
+        break;
+      }
+
+      case 'item/error': {
+        console.warn(`[Pluggy Webhook Handler] Notificação de erro no Item ${itemId}:`, eventPayload.error || eventPayload.data);
+        const supabase = getServerSupabaseClient();
+        if (supabase && itemId) {
+          await supabase
+            .from('bank_connections')
+            .update({
+              status: 'ERROR',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('provider_item_id', itemId);
+        }
+        const log: WebhookLogEntry = {
+          id: eventId,
+          event: eventType,
+          itemId,
+          timestamp: new Date().toISOString(),
+          status: 'ERROR',
+          message: `Erro reportado no Item: ${JSON.stringify(eventPayload.error || {})}`,
+        };
+        webhookEventLogs.push(log);
+        break;
+      }
+
+      case 'item/deleted': {
+        console.log(`[Pluggy Webhook Handler] Notificação de exclusão do Item ${itemId}`);
+        const supabase = getServerSupabaseClient();
+        if (supabase && itemId) {
+          await supabase
+            .from('bank_connections')
+            .update({
+              status: 'DISCONNECTED',
+              consent_status: 'REVOKED',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('provider_item_id', itemId);
+        }
+        const log: WebhookLogEntry = {
+          id: eventId,
+          event: eventType,
+          itemId,
+          timestamp: new Date().toISOString(),
+          status: 'PROCESSED',
+          message: `Item ${itemId} desconectado.`,
+        };
+        webhookEventLogs.push(log);
+        break;
+      }
+
+      case 'transactions/deleted': {
+        console.log(`[Pluggy Webhook Handler] Transações deletadas no Item ${itemId}`);
+        const log: WebhookLogEntry = {
+          id: eventId,
+          event: eventType,
+          itemId,
+          timestamp: new Date().toISOString(),
+          status: 'PROCESSED',
+          message: 'Notificação de transações deletadas recebida.',
+        };
+        webhookEventLogs.push(log);
+        break;
+      }
+
+      default: {
+        console.log(`[Pluggy Webhook Handler] Evento genérico recebido: ${eventType}`);
+        const log: WebhookLogEntry = {
+          id: eventId,
+          event: eventType,
+          itemId,
+          timestamp: new Date().toISOString(),
+          status: 'PROCESSED',
+          message: `Evento genérico ${eventType} registrado.`,
+        };
+        webhookEventLogs.push(log);
+        break;
+      }
+    }
+
+    return {
+      success: true,
+      eventId,
+      event: eventType,
+      itemId,
+      message: `Evento ${eventType} processado com sucesso.`,
+    };
+  } catch (err: any) {
+    console.error(`[Pluggy Webhook Handler] Erro ao processar evento ${eventType}:`, err?.message || err);
+    const log: WebhookLogEntry = {
+      id: eventId,
+      event: eventType,
+      itemId,
+      timestamp: new Date().toISOString(),
+      status: 'ERROR',
+      message: `Erro: ${err?.message || 'Falha desconhecida'}`,
+    };
+    webhookEventLogs.push(log);
+    return {
+      success: false,
+      eventId,
+      event: eventType,
+      itemId,
+      message: `Erro no processamento do evento: ${err?.message}`,
+    };
   }
 }
 
@@ -512,6 +1266,18 @@ export async function getPluggyDiagnostics() {
     }
   }
 
+  let registeredWebhooks: any[] = [];
+  if (authStatus === 'SUCCESS') {
+    try {
+      const whResult = await listPluggyWebhooks();
+      if (whResult.success && whResult.webhooks) {
+        registeredWebhooks = whResult.webhooks;
+      }
+    } catch {}
+  }
+
+  const recentLogs = getRecentWebhookLogs();
+
   return {
     isConfigured,
     maskedId,
@@ -524,6 +1290,11 @@ export async function getPluggyDiagnostics() {
     sandboxReady: true,
     mode: authStatus === 'SUCCESS' ? 'pluggy-live' : 'simulation-sandbox',
     supportedConnectorsCount: SUPPORTED_INSTITUTIONS.length,
+    webhookEndpoint: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+    registeredWebhooksCount: registeredWebhooks.length,
+    registeredWebhooks,
+    recentWebhookEventsCount: recentLogs.length,
+    recentWebhookEvents: recentLogs.slice(0, 10),
     timestamp: new Date().toISOString(),
   };
 }

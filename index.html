@@ -15,6 +15,28 @@
           e.preventDefault();
         }
       });
+      (function() {
+        try {
+          var stored = localStorage.getItem('theme');
+          var userRaw = localStorage.getItem('vfinance_user');
+          var isDark = true;
+          if (stored === 'light') {
+            isDark = false;
+          } else if (stored === 'dark') {
+            isDark = true;
+          } else if (userRaw) {
+            var parsed = JSON.parse(userRaw);
+            if (parsed && parsed.themeMode === 'light') {
+              isDark = false;
+            }
+          }
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {}
+      })();
     </script>
   </head>
   <body>

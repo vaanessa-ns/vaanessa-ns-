@@ -255,6 +255,55 @@ export const ProfileView: React.FC = () => {
         </div>
       </form>
 
+      {/* Theme & Appearance Settings */}
+      <div className="bg-white dark:bg-[#161618] p-6 rounded-3xl border border-slate-200/80 dark:border-white/5 shadow-xs space-y-4">
+        <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+          <Sun className="w-5 h-5 text-emerald-400" />
+          <span>Aparência & Tema</span>
+        </h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Escolha entre o modo escuro para conforto visual ou modo claro para alta luminosidade.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <button
+            type="button"
+            onClick={() => updateUserProfile({ themeMode: 'dark' })}
+            className={`p-4 rounded-2xl border flex items-center gap-3 transition-all cursor-pointer text-left ${
+              user.themeMode === 'dark'
+                ? 'bg-slate-900 text-white border-emerald-500 shadow-md ring-2 ring-emerald-500/20'
+                : 'bg-slate-50 dark:bg-[#202024] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-white/10 hover:border-emerald-500/50'
+            }`}
+          >
+            <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-amber-400 shrink-0">
+              <Moon className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold">Modo Escuro (Dark)</p>
+              <p className="text-[11px] text-slate-400">Fundo escuro, ideal para ambientes com pouca luz</p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => updateUserProfile({ themeMode: 'light' })}
+            className={`p-4 rounded-2xl border flex items-center gap-3 transition-all cursor-pointer text-left ${
+              user.themeMode === 'light'
+                ? 'bg-white text-slate-900 border-emerald-500 shadow-md ring-2 ring-emerald-500/20'
+                : 'bg-slate-50 dark:bg-[#202024] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-white/10 hover:border-emerald-500/50'
+            }`}
+          >
+            <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-amber-500 shrink-0">
+              <Sun className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold">Modo Claro (Light)</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Fundo limpo e cards brancos</p>
+            </div>
+          </button>
+        </div>
+      </div>
+
       {/* Security & PIN Settings */}
       <div className="bg-white dark:bg-[#161618] p-6 rounded-3xl border border-slate-200/80 dark:border-white/5 shadow-xs space-y-4">
         <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">

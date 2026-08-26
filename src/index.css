@@ -1,22 +1,45 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
   :root {
     --bg-main: #f8fafc;
     --bg-card: #ffffff;
+    --bg-surface: #f1f5f9;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
     --border-subtle: #e2e8f0;
+    color-scheme: light;
   }
 
   .dark {
     --bg-main: #0A0A0B;
     --bg-card: #161618;
+    --bg-surface: #1C1C1F;
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
     --border-subtle: rgba(255, 255, 255, 0.07);
     color-scheme: dark;
   }
 
+  html, body {
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+
   body {
     background-color: var(--bg-main);
-    color: #f1f5f9;
+    color: var(--text-main);
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  * {
+    box-sizing: border-box;
   }
 }
 
@@ -47,4 +70,5 @@
     border-color: rgba(255, 255, 255, 0.07);
   }
 }
+
 

@@ -62,6 +62,8 @@ export interface FinanceContextType {
   // Open Finance & Bank Connections
   bankConnections: BankConnection[];
   isSyncingBank: boolean;
+  bankSyncError: string | null;
+  lastBankSyncTime: string | null;
   isConnectBankOpen: boolean;
   setIsConnectBankOpen: (open: boolean) => void;
   connectBank: (
@@ -183,7 +185,35 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [syncError, setSyncError] = useState<string | null>(null);
 
   // States
-  const [user, setUser] = useState<UserProfile>(() => getStorage(STORAGE_KEYS.USER, initialUser));
+  const [user, setUser] = useState<UserProfile>(() => {
+    const saved = getStorage(STORAGE_KEYS.USER, initialUser);
+    const theme = typeof window !== 'undefined' ? localStorage.getItem('theme') : null;
+    if (theme === 'light' || theme === 'dark' || theme === 'system') {
+      return { ...saved, themeMode: theme as any };
+    }
+    return saved;
+  });
+
+  // Keep HTML root class and localStorage strictly synchronized with themeMode
+  useEffect(() => {
+    const mode = user.themeMode || 'dark';
+    try {
+      localStorage.setItem('theme', mode);
+    } catch (e) {}
+
+    if (mode === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else if (mode === 'light') {
+      document.documentElement.classList.remove('dark');
+    } else if (mode === 'system') {
+      const isSysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (isSysDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    }
+  }, [user.themeMode]);
   const [accounts, setAccounts] = useState<BankAccount[]>(() => getStorage(STORAGE_KEYS.ACCOUNTS, authUser ? [] : initialAccounts));
   const [transactions, setTransactions] = useState<Transaction[]>(() => getStorage(STORAGE_KEYS.TRANSACTIONS, authUser ? [] : initialTransactions));
   const [fixedBills, setFixedBills] = useState<FixedBill[]>(() => getStorage(STORAGE_KEYS.BILLS, authUser ? [] : initialFixedBills));
@@ -198,6 +228,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Open Finance & Bank Connections
   const [bankConnections, setBankConnections] = useState<BankConnection[]>([]);
   const [isSyncingBank, setIsSyncingBank] = useState(false);
+  const [bankSyncError, setBankSyncError] = useState<string | null>(null);
+  const [lastBankSyncTime, setLastBankSyncTime] = useState<string | null>(null);
   const [isConnectBankOpen, setIsConnectBankOpen] = useState(false);
 
   // Security Lock
@@ -1463,7 +1495,10 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       // Try /api/pluggy/sync first, fallback to /api/open-finance/sync
       let res = await fetch('/api/pluggy/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: JSON.stringify({
           itemId,
           institutionId: institutionId || '0',
@@ -1471,10 +1506,13 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }),
       });
 
-      if (!res.ok) {
+      if (!res.ok && res.status === 404) {
         res = await fetch('/api/open-finance/sync', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
           body: JSON.stringify({
             itemId,
             institutionId: institutionId || '0',
@@ -1483,7 +1521,16 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
       }
 
-      const data = await res.json();
+      let data: any = null;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const rawText = await res.text().catch(() => '');
+        console.error('Non-JSON response in sync:', rawText);
+        throw new Error('O servidor retornou uma resposta inesperada ao sincronizar os dados bancários.');
+      }
+
       if (!data.success || !data.data) {
         throw new Error(data.error || 'Falha ao conectar instituição bancária.');
       }
@@ -1710,19 +1757,25 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       }
 
+      setBankSyncError(null);
+      setLastBankSyncTime(new Date().toISOString());
+
       try {
         confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
       } catch {}
 
       return {
         success: true,
-        message: `Conta ${payload.connection.institutionName} conectada com sucesso via Open Finance!`,
+        message: `Conta ${payload.connection?.institutionName || 'bancária'} conectada com sucesso via Open Finance!`,
+        data: payload,
       };
     } catch (err: any) {
       console.error('Error connecting bank:', err);
+      const errMsg = err.message || 'Não foi possível completar a conexão bancária.';
+      setBankSyncError(errMsg);
       return {
         success: false,
-        message: err.message || 'Não foi possível completar a conexão bancária.',
+        message: errMsg,
       };
     } finally {
       setIsSyncingBank(false);
@@ -1731,22 +1784,49 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const syncBankConnection = async (connectionId?: string) => {
     setIsSyncingBank(true);
+    setBankSyncError(null);
     try {
       const target = bankConnections.find((c) => c.id === connectionId) || bankConnections[0];
       if (!target) return;
 
-      const res = await fetch('/api/open-finance/sync', {
+      let res = await fetch('/api/pluggy/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: JSON.stringify({
           itemId: target.providerItemId,
           institutionId: target.institutionId,
           institutionName: target.institutionName,
         }),
       });
+
+      if (!res.ok && res.status === 404) {
+        res = await fetch('/api/open-finance/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({
+            itemId: target.providerItemId,
+            institutionId: target.institutionId,
+            institutionName: target.institutionName,
+          }),
+        });
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        console.warn('Sync endpoint returned non-JSON response.');
+        return;
+      }
+
       const data = await res.json();
       if (data.success && data.data) {
         const now = new Date().toISOString();
+        setLastBankSyncTime(now);
         setBankConnections((prev) =>
           prev.map((c) => (c.id === target.id ? { ...c, lastSyncAt: now, status: 'UPDATED' } : c))
         );
@@ -1757,9 +1837,12 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
             .eq('id', target.id)
             .eq('user_id', authUser.id);
         }
+      } else if (data.error) {
+        setBankSyncError(data.error);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Sync error:', e);
+      setBankSyncError(e?.message || 'Erro ao sincronizar dados da instituição.');
     } finally {
       setIsSyncingBank(false);
     }
@@ -1770,11 +1853,19 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!target) return;
 
     try {
-      await fetch('/api/open-finance/disconnect', {
-        method: 'DELETE',
+      let res = await fetch('/api/pluggy/disconnect', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ itemId: target.providerItemId }),
       });
+
+      if (!res.ok && res.status === 404) {
+        res = await fetch('/api/open-finance/disconnect', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ itemId: target.providerItemId }),
+        });
+      }
 
       setBankConnections((prev) => prev.filter((c) => c.id !== connectionId));
       if (isSupabaseConfigured && supabase && authUser) {
@@ -1852,6 +1943,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // Open Finance & Bank Connections
         bankConnections,
         isSyncingBank,
+        bankSyncError,
+        lastBankSyncTime,
         isConnectBankOpen,
         setIsConnectBankOpen,
         connectBank,

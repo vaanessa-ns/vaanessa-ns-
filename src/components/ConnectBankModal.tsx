@@ -60,6 +60,10 @@ interface PluggyDiagnostics {
   connectTokenPreview: string;
   sandboxReady: boolean;
   mode: string;
+  webhookEndpoint?: string;
+  registeredWebhooksCount?: number;
+  registeredWebhooks?: any[];
+  recentWebhookEventsCount?: number;
 }
 
 interface ConnectBankModalProps {
@@ -89,14 +93,20 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
   const [diagnostics, setDiagnostics] = useState<PluggyDiagnostics | null>(null);
   const [isLoadingDiag, setIsLoadingDiag] = useState(false);
   const [showDiagPanel, setShowDiagPanel] = useState(false);
+  const [isRegisteringWebhook, setIsRegisteringWebhook] = useState(false);
+  const [webhookFeedback, setWebhookFeedback] = useState<string | null>(null);
 
   const fetchDiagnostics = async () => {
     setIsLoadingDiag(true);
+    setWebhookFeedback(null);
     try {
       const res = await fetch('/api/pluggy/diagnostics');
       if (res.ok) {
-        const data = await res.json();
-        setDiagnostics(data);
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await res.json();
+          setDiagnostics(data);
+        }
       }
     } catch (e) {
       console.warn('Failed to fetch Pluggy diagnostics:', e);
@@ -104,6 +114,56 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
       setIsLoadingDiag(false);
     }
   };
+
+  const handleRegisterWebhook = async () => {
+    setIsRegisteringWebhook(true);
+    setWebhookFeedback(null);
+    try {
+      const res = await fetch('/api/pluggy/webhooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+          event: 'all',
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setWebhookFeedback('Webhook registrado com sucesso na Pluggy!');
+        fetchDiagnostics();
+      } else {
+        setWebhookFeedback(data.error || 'Falha ao registrar webhook.');
+      }
+    } catch (err: any) {
+      setWebhookFeedback(err.message || 'Erro de conexão.');
+    } finally {
+      setIsRegisteringWebhook(false);
+    }
+  };
+
+  // Handle OAuth Redirect Returns (e.g. from Nubank, Itaú, etc.)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const oauthItemId = params.get('itemId') || params.get('item_id');
+      const oauthError = params.get('error') || params.get('errorMessage');
+
+      if (oauthItemId) {
+        console.log('[Pluggy OAuth Callback] Identificado itemId retornado pelo banco:', oauthItemId);
+        const cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, document.title, cleanUrl);
+        handlePluggySuccess({ item: { id: oauthItemId } });
+      } else if (oauthError) {
+        console.warn('[Pluggy OAuth Callback] Erro na autorização bancária:', oauthError);
+        setErrorMessage(`Autorização cancelada ou recusada pelo banco: ${oauthError}`);
+        const cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+    } catch (err) {
+      console.warn('Erro ao processar callback de OAuth:', err);
+    }
+  }, []);
 
   useEffect(() => {
     if (isOpen) {
@@ -147,7 +207,10 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
       // 1. Request Connect Token from server
       let res = await fetch('/api/pluggy/connect-token', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: JSON.stringify({
           clientUserId: authUser?.id,
           connectorId: selectedBank?.connectorId,
@@ -155,10 +218,13 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
         }),
       });
 
-      if (!res.ok) {
+      if (!res.ok && res.status === 404) {
         res = await fetch('/api/open-finance/connect-token', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
           body: JSON.stringify({
             clientUserId: authUser?.id,
             connectorId: selectedBank?.connectorId,
@@ -167,13 +233,25 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
         });
       }
 
-      const tokenData = await res.json();
+      let tokenData: any = null;
+      const contentType = res.headers.get('content-type') || '';
 
-      if (!tokenData?.connectToken && !tokenData?.accessToken) {
-        throw new Error(tokenData?.error || 'Não foi possível gerar o token do Pluggy.');
+      if (contentType.includes('application/json')) {
+        tokenData = await res.json();
+      } else {
+        const rawText = await res.text().catch(() => '');
+        console.error(`[ConnectBankModal] Servidor retornou resposta não-JSON (HTTP ${res.status}):`, rawText);
+        throw new Error(
+          `O servidor retornou uma resposta inválida (HTTP ${res.status}). Verifique se as variáveis PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET estão configuradas na Vercel/Ambiente.`
+        );
       }
 
-      const token = tokenData.connectToken || tokenData.accessToken;
+      if (!res.ok || (!tokenData?.connectToken && !tokenData?.accessToken)) {
+        const backendErrorMsg = tokenData?.error || tokenData?.details || 'Não foi possível gerar o Connect Token na Pluggy.';
+        throw new Error(backendErrorMsg);
+      }
+
+      const token = tokenData.accessToken || tokenData.connectToken;
       setConnectToken(token);
 
       // If sandbox fallback or simulation token
@@ -277,14 +355,11 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-                  Conexão Bancária Pluggy
+                  Conectar Banco
                 </h3>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                  OPEN FINANCE
-                </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Sincronização oficial em tempo real (Modo Leitura)
+                Sincronização automática e segura (Modo Leitura)
               </p>
             </div>
           </div>
@@ -314,9 +389,9 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                     <Building2 className="w-5 h-5 text-slate-950" />
                   </div>
                   <div>
-                    <p className="font-extrabold text-slate-950">Conectar via Pluggy Open Finance</p>
+                    <p className="font-extrabold text-slate-950">Conectar minha conta bancária</p>
                     <p className="text-[11px] text-slate-900/80 font-medium">
-                      Abre o widget com todas as instituições do Brasil
+                      Selecione sua instituição financeira de forma rápida e segura
                     </p>
                   </div>
                 </div>
@@ -372,15 +447,49 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                         {diagnostics?.authMessage || (isLoadingDiag ? 'Verificando...' : 'Pronto para uso')}
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={fetchDiagnostics}
-                      disabled={isLoadingDiag}
-                      className="text-xs text-emerald-400 hover:underline flex items-center gap-1 mt-1 disabled:opacity-50 cursor-pointer"
-                    >
-                      <RefreshCw className={`w-3 h-3 ${isLoadingDiag ? 'animate-spin' : ''}`} />
-                      <span>Revalidar credenciais Pluggy</span>
-                    </button>
+
+                    <div className="pt-2 border-t border-slate-200 dark:border-white/5 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span>Endpoint Webhook:</span>
+                        <span className="font-mono text-[10px] text-emerald-400 truncate max-w-[200px]" title="https://vaanessa-ns.vercel.app/api/pluggy/webhook">
+                          /api/pluggy/webhook
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Webhooks na Pluggy:</span>
+                        <span className="font-semibold text-slate-800 dark:text-slate-200">
+                          {diagnostics?.registeredWebhooksCount ?? 0} registrado(s)
+                        </span>
+                      </div>
+
+                      {webhookFeedback && (
+                        <p className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/10 p-1.5 rounded-lg">
+                          {webhookFeedback}
+                        </p>
+                      )}
+
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={fetchDiagnostics}
+                          disabled={isLoadingDiag}
+                          className="text-[11px] text-emerald-400 hover:underline flex items-center gap-1 disabled:opacity-50 cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${isLoadingDiag ? 'animate-spin' : ''}`} />
+                          <span>Revalidar</span>
+                        </button>
+                        <span className="text-slate-400">•</span>
+                        <button
+                          type="button"
+                          onClick={handleRegisterWebhook}
+                          disabled={isRegisteringWebhook}
+                          className="text-[11px] text-emerald-400 hover:underline flex items-center gap-1 disabled:opacity-50 cursor-pointer"
+                        >
+                          <ShieldCheck className="w-3 h-3" />
+                          <span>{isRegisteringWebhook ? 'Registrando...' : 'Registrar Webhook na Pluggy'}</span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -476,7 +585,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                 <div>
                   <div className="flex items-center gap-2">
                     <h4 className="text-sm font-bold text-slate-900 dark:text-white">
-                      {selectedBank ? selectedBank.name : 'Pluggy Open Finance Brasil'}
+                      {selectedBank ? selectedBank.name : 'Conexão Bancária'}
                     </h4>
                     {selectedBank?.isSandbox && (
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-400">
@@ -486,7 +595,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                   </div>
                   <p className="text-xs text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    Pronto para conectar via Pluggy Connect Widget
+                    Pronto para autorizar conexão
                   </p>
                 </div>
               </div>
@@ -509,7 +618,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                       ✓
                     </div>
                     <span>
-                      <strong className="text-slate-900 dark:text-white">Saldo em Conta:</strong> Leitura em tempo real para atualizar o saldo disponível do Vfinance.
+                      <strong className="text-slate-900 dark:text-white">Saldo em Conta:</strong> Leitura em tempo real para atualizar o saldo disponível do V Finance.
                     </span>
                   </li>
                   <li className="flex items-start gap-2.5">
@@ -517,7 +626,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                       ✓
                     </div>
                     <span>
-                      <strong className="text-slate-900 dark:text-white">Extrato & PIX:</strong> Importação das movimentações para alimentar relatórios e IA.
+                      <strong className="text-slate-900 dark:text-white">Extrato & PIX:</strong> Importação das movimentações para alimentar relatórios.
                     </span>
                   </li>
                   <li className="flex items-start gap-2.5">
@@ -533,7 +642,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                       ✓
                     </div>
                     <span>
-                      <strong className="text-slate-900 dark:text-white">Segurança Total:</strong> Sem autorização para pagamentos ou movimentações financeiras.
+                      <strong className="text-slate-900 dark:text-white">Segurança Total:</strong> Sem autorização para pagamentos ou transferências.
                     </span>
                   </li>
                 </ul>
@@ -542,7 +651,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               <div className="p-3 bg-slate-100 dark:bg-[#202024] rounded-2xl text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
                 <Lock className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span>
-                  Consentimento seguro gerenciado pelo Banco Central e Open Finance Brasil.
+                  Consentimento seguro e criptografado diretamente com o seu banco.
                 </span>
               </div>
             </div>
@@ -556,10 +665,10 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               </div>
               <div className="space-y-1">
                 <h4 className="text-base font-bold text-slate-900 dark:text-white">
-                  Gerando Sessão Segura
+                  Conectando sua conta...
                 </h4>
                 <p className="text-xs text-slate-400 max-w-xs mx-auto">
-                  {statusMessage || 'Solicitando Connect Token à Pluggy...'}
+                  Preparando conexão segura com a instituição bancária...
                 </p>
               </div>
             </div>
@@ -587,7 +696,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               </div>
               <div className="space-y-1">
                 <h4 className="text-base font-bold text-slate-900 dark:text-white">
-                  Sincronizando Dados Bancários
+                  Sincronizando seus dados...
                 </h4>
                 <p className="text-xs text-slate-400 max-w-xs mx-auto">
                   {statusMessage || 'Importando contas, saldos e movimentações...'}
@@ -604,7 +713,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               </div>
               <div className="space-y-1.5">
                 <h4 className="text-lg font-bold text-slate-900 dark:text-white">
-                  Conexão Concluída com Sucesso!
+                  Banco conectado com sucesso!
                 </h4>
                 <p className="text-xs text-slate-400 max-w-sm mx-auto">
                   Sua conta de <strong className="text-emerald-400">{syncDetails?.institutionName || selectedBank?.name || 'sua instituição'}</strong> foi vinculada. O Saldo Disponível, Cartões e Movimentações foram atualizados.
@@ -613,7 +722,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
 
               <div className="p-4 rounded-2xl bg-emerald-500/5 border border-emerald-500/20 text-xs text-left space-y-2 text-slate-300">
                 <div className="flex items-center justify-between text-slate-400">
-                  <span>Instituição Conectada:</span>
+                  <span>Instituição:</span>
                   <span className="text-white font-bold">{syncDetails?.institutionName || selectedBank?.name || 'Banco'}</span>
                 </div>
                 <div className="flex items-center justify-between text-slate-400">
@@ -621,12 +730,8 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                   <span className="text-emerald-400 font-bold">{syncDetails?.accountsCount || 1} conta(s)</span>
                 </div>
                 <div className="flex items-center justify-between text-slate-400">
-                  <span>Status do Consentimento:</span>
-                  <span className="text-emerald-400 font-bold">ATIVO (Open Finance)</span>
-                </div>
-                <div className="flex items-center justify-between text-slate-400">
-                  <span>IA Consultora:</span>
-                  <span className="text-white font-bold">Alimentada com dados reais</span>
+                  <span>Status:</span>
+                  <span className="text-emerald-400 font-bold">Banco conectado</span>
                 </div>
               </div>
             </div>

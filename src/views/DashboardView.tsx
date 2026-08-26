@@ -14,7 +14,10 @@ import {
   Clock,
   Plus,
   ArrowRight,
-  ShieldCheck
+  ShieldCheck,
+  RefreshCw,
+  AlertCircle,
+  Building2,
 } from 'lucide-react';
 import { useFinance } from '../context/FinanceContext';
 import { formatCurrency, formatDate, getDaysUntil } from '../utils/formatters';
@@ -22,6 +25,11 @@ import { formatCurrency, formatDate, getDaysUntil } from '../utils/formatters';
 export const DashboardView: React.FC = () => {
   const {
     user,
+    accounts,
+    bankConnections,
+    isSyncingBank,
+    bankSyncError,
+    lastBankSyncTime,
     availableBalance,
     monthIncomes,
     monthExpenses,
@@ -38,8 +46,12 @@ export const DashboardView: React.FC = () => {
     setActiveTab,
     setIsQuickAddOpen,
     setIsConnectBankOpen,
+    syncBankConnection,
     payFixedBill,
   } = useFinance();
+
+  const hasConnectedAccount = bankConnections.length > 0 || accounts.length > 0;
+  const mainBankName = bankConnections[0]?.institutionName || accounts[0]?.bank || 'Instituição';
 
   // Recent 5 transactions for selected month
   const recentTransactions = transactions
@@ -118,28 +130,114 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
+      {/* Bank Sync Error Alert Banner */}
+      {bankSyncError && (
+        <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
+          <div className="flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 shrink-0 text-rose-500" />
+            <div>
+              <p className="text-xs font-bold text-slate-900 dark:text-white">Não foi possível conectar sua conta.</p>
+              <p className="text-xs text-slate-600 dark:text-slate-400">Verifique a conexão e tente novamente.{bankSyncError && !bankSyncError.includes('Não foi possível') ? ` (${bankSyncError})` : ''}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsConnectBankOpen(true)}
+            className="px-3.5 py-1.5 rounded-xl bg-rose-500 text-white hover:bg-rose-600 font-bold text-xs self-start sm:self-auto transition-colors cursor-pointer"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
+
       {/* 4 Core Metric Cards (Section 4 of prompt) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Saldo Disponível */}
-        <div className="bg-white dark:bg-[#161618] p-5 rounded-3xl border border-slate-200/80 dark:border-white/5 shadow-xs hover:shadow-xl dark:hover:border-white/10 transition-all">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-              Saldo Disponível
-            </span>
-            <div className="w-9 h-9 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center">
-              <Wallet className="w-5 h-5" />
+        <div className="bg-white dark:bg-[#161618] p-5 rounded-3xl border border-slate-200/80 dark:border-white/5 shadow-xs hover:shadow-xl dark:hover:border-white/10 transition-all flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                Saldo Disponível
+              </span>
+              <div className="w-9 h-9 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center">
+                <Wallet className="w-5 h-5" />
+              </div>
             </div>
-          </div>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
-              {formatCurrency(availableBalance, user.hideValues)}
-            </p>
-            <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
-              <span>Patrimônio Líquido:</span>
-              <strong className="text-slate-600 dark:text-slate-300 font-semibold">
-                {formatCurrency(totalNetWorth, user.hideValues)}
-              </strong>
-            </p>
+
+            <div className="mt-3">
+              {/* STATE 1: CONNECTING */}
+              {isSyncingBank && !hasConnectedAccount ? (
+                <div className="space-y-1.5 py-1">
+                  <div className="flex items-center gap-2 text-sm font-bold text-emerald-500">
+                    <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                    <span>Conectando sua conta...</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Aguardando autorização segura</p>
+                </div>
+              ) : isSyncingBank && hasConnectedAccount ? (
+                /* STATE 2: SYNCING */
+                <div className="space-y-1">
+                  <p className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+                    {formatCurrency(availableBalance, user.hideValues)}
+                  </p>
+                  <p className="text-[11px] text-emerald-500 font-medium flex items-center gap-1.5 mt-1">
+                    <RefreshCw className="w-3 h-3 animate-spin text-emerald-400" />
+                    <span>Sincronizando seus dados...</span>
+                  </p>
+                </div>
+              ) : bankSyncError && !hasConnectedAccount ? (
+                /* STATE 3: ERROR WITHOUT ACCOUNT */
+                <div className="space-y-2 py-0.5">
+                  <div>
+                    <p className="text-xs font-bold text-rose-500">
+                      Não foi possível conectar sua conta.
+                    </p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Verifique a conexão e tente novamente.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setIsConnectBankOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-rose-500/15 text-rose-500 hover:bg-rose-500/25 border border-rose-500/30 text-xs font-bold transition-all cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Tentar novamente</span>
+                  </button>
+                </div>
+              ) : !hasConnectedAccount ? (
+                /* STATE 4: NO CONNECTED ACCOUNT (DO NOT SHOW R$ 0,00 AS REAL) */
+                <div className="space-y-2 py-0.5">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-tight">
+                    Conecte seu banco para visualizar seu saldo real.
+                  </p>
+                  <button
+                    onClick={() => setIsConnectBankOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-bold transition-all cursor-pointer"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Conectar Banco</span>
+                  </button>
+                </div>
+              ) : (
+                /* STATE 5: CONNECTED - SHOW REAL BALANCE */
+                <div>
+                  <p className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+                    {formatCurrency(availableBalance, user.hideValues)}
+                  </p>
+                  <div className="flex items-center justify-between mt-1">
+                    <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <span>Patrimônio:</span>
+                      <strong className="text-slate-600 dark:text-slate-300 font-semibold">
+                        {formatCurrency(totalNetWorth, user.hideValues)}
+                      </strong>
+                    </p>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-1.5 py-0.5 rounded-full">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                      <span>Banco conectado: {mainBankName}</span>
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

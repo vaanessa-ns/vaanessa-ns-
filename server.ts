@@ -11,6 +11,12 @@ import {
   deletePluggyItem,
   generateSandboxBankPayload,
   getPluggyDiagnostics,
+  getPluggyApiKey,
+  processPluggyWebhookEvent,
+  getRecentWebhookLogs,
+  registerPluggyWebhook,
+  listPluggyWebhooks,
+  deletePluggyWebhook,
 } from "./server/openFinanceService";
 
 dotenv.config();
@@ -78,29 +84,71 @@ async function startServer() {
         connectorId: connectorId ? Number(connectorId) : undefined,
       });
 
-      if (tokenResult.error && !tokenResult.accessToken) {
-        return res.status(400).json({
-          error: tokenResult.error,
+      if (!tokenResult.success || (!tokenResult.accessToken && !tokenResult.connectToken)) {
+        const statusCode = tokenResult.status && tokenResult.status >= 400 && tokenResult.status < 600 ? tokenResult.status : 400;
+        return res.status(statusCode).json({
+          success: false,
+          error: tokenResult.error || "Falha ao gerar Connect Token na Pluggy",
+          step: tokenResult.step || "connect_token",
           accessToken: "",
           connectToken: "",
-          provider: tokenResult.provider,
-          sandbox: tokenResult.sandbox,
+          provider: tokenResult.provider || "pluggy",
+          sandbox: tokenResult.sandbox || false,
         });
       }
 
       return res.json({
-        accessToken: tokenResult.accessToken,
+        success: true,
         connectToken: tokenResult.connectToken,
+        accessToken: tokenResult.accessToken,
         provider: tokenResult.provider,
         sandbox: tokenResult.sandbox,
       });
     } catch (error: any) {
       console.error("Error creating connect token:", error);
-      return res.status(500).json({ error: "Failed to initialize Open Finance connect token" });
+      return res.status(500).json({
+        success: false,
+        error: "Failed to initialize Open Finance connect token",
+        details: error?.message,
+        accessToken: "",
+        connectToken: "",
+        provider: "pluggy",
+        sandbox: false,
+      });
     }
   };
   app.post("/api/open-finance/connect-token", handleConnectToken);
   app.post("/api/pluggy/connect-token", handleConnectToken);
+
+  // Pluggy Auth Status Verification (Server-Side)
+  const handlePluggyAuth = async (_req: any, res: any) => {
+    try {
+      const authResult = await getPluggyApiKey();
+      if (!authResult.apiKey) {
+        return res.status(authResult.status || 401).json({
+          success: false,
+          authenticated: false,
+          error: authResult.error || 'Credenciais Pluggy não configuradas ou inválidas.',
+          step: 'auth',
+        });
+      }
+      return res.json({
+        success: true,
+        authenticated: true,
+        message: 'Autenticação com Pluggy realizada com sucesso.',
+      });
+    } catch (error: any) {
+      console.error('Error in /api/pluggy/auth:', error);
+      return res.status(500).json({
+        success: false,
+        authenticated: false,
+        error: 'Erro interno ao autenticar com Pluggy',
+        details: error?.message,
+      });
+    }
+  };
+  app.get("/api/pluggy/auth", handlePluggyAuth);
+  app.post("/api/pluggy/auth", handlePluggyAuth);
 
   // 2. Institutions List
   const handleInstitutions = (_req: any, res: any) => {
@@ -122,12 +170,18 @@ async function startServer() {
 
       // If itemId is a real Pluggy itemId
       if (itemId && !String(itemId).startsWith("sandbox_")) {
-        const realData = await fetchPluggyItemData(String(itemId));
-        if (realData) {
+        const realResult = await fetchPluggyItemData(String(itemId));
+        if (realResult.success && realResult.data) {
           return res.json({
             success: true,
             provider: "pluggy",
-            data: realData,
+            data: realResult.data,
+          });
+        } else {
+          return res.status(realResult.status || 400).json({
+            success: false,
+            error: realResult.error || "Falha ao obter dados bancários da Pluggy",
+            details: realResult.error,
           });
         }
       }
@@ -141,7 +195,7 @@ async function startServer() {
       });
     } catch (error: any) {
       console.error("Error synchronizing Open Finance data:", error);
-      return res.status(500).json({ error: "Failed to synchronize bank data" });
+      return res.status(500).json({ success: false, error: "Failed to synchronize bank data" });
     }
   };
   app.post("/api/open-finance/sync", handleSync);
@@ -152,9 +206,9 @@ async function startServer() {
     try {
       const { itemId } = req.query;
       if (itemId && typeof itemId === "string" && !itemId.startsWith("sandbox_")) {
-        const realData = await fetchPluggyItemData(itemId);
-        if (realData?.accounts) {
-          return res.json({ accounts: realData.accounts });
+        const realResult = await fetchPluggyItemData(itemId);
+        if (realResult.success && realResult.data?.accounts) {
+          return res.json({ accounts: realResult.data.accounts });
         }
       }
       const demo = generateSandboxBankPayload("0");
@@ -169,9 +223,9 @@ async function startServer() {
     try {
       const { itemId } = req.query;
       if (itemId && typeof itemId === "string" && !itemId.startsWith("sandbox_")) {
-        const realData = await fetchPluggyItemData(itemId);
-        if (realData?.accounts) {
-          const allTx = realData.accounts.flatMap((a: any) => a.transactions || []);
+        const realResult = await fetchPluggyItemData(itemId);
+        if (realResult.success && realResult.data?.accounts) {
+          const allTx = realResult.data.accounts.flatMap((a: any) => a.transactions || []);
           return res.json({ transactions: allTx });
         }
       }
@@ -188,10 +242,9 @@ async function startServer() {
     try {
       const { itemId } = req.query;
       if (itemId && typeof itemId === "string" && !itemId.startsWith("sandbox_")) {
-        const realData = await fetchPluggyItemData(itemId);
-        if (realData?.accounts) {
-          const creditAccs = realData.accounts.filter((a: any) => a.type === "CREDIT");
-          return res.json({ cards: creditAccs });
+        const realResult = await fetchPluggyItemData(itemId);
+        if (realResult.success && realResult.data?.cards) {
+          return res.json({ cards: realResult.data.cards });
         }
       }
       const demo = generateSandboxBankPayload("0");
@@ -206,9 +259,9 @@ async function startServer() {
     try {
       const { itemId } = req.query;
       if (itemId && typeof itemId === "string" && !itemId.startsWith("sandbox_")) {
-        const realData = await fetchPluggyItemData(itemId);
-        if (realData?.cards) {
-          const allBills = realData.cards.flatMap((c) => c.bills || []);
+        const realResult = await fetchPluggyItemData(itemId);
+        if (realResult.success && realResult.data?.cards) {
+          const allBills = realResult.data.cards.flatMap((c: any) => c.bills || []);
           return res.json({ bills: allBills });
         }
       }
@@ -234,17 +287,139 @@ async function startServer() {
     }
   });
 
-  // 9. Webhook Receiver (Pluggy push notifications)
-  app.post("/api/open-finance/webhook", async (req, res) => {
+  // 9. Webhook Receiver & Status (Pluggy push notifications)
+  const handleWebhookPost = async (req: any, res: any) => {
     try {
-      const event = req.body;
-      console.log("Received Open Finance webhook event:", event?.event, "Item ID:", event?.itemId);
-      // In production, sync updated item into database
-      return res.status(200).json({ received: true });
-    } catch (error) {
-      return res.status(500).json({ error: "Webhook error" });
+      const body = req.body || {};
+      const eventType = body.event || body.type || 'unknown';
+      const eventId = body.id || body.eventId || `evt_${Date.now()}`;
+      const itemId = body.itemId || body.data?.itemId || body.data?.id;
+
+      console.log(`[Express /api/pluggy/webhook] Recebido evento Pluggy: ${eventType} | itemId: ${itemId || 'N/A'} | eventId: ${eventId}`);
+
+      // Background processing for fast 200 acknowledge
+      const processPromise = processPluggyWebhookEvent(body).catch((err) => {
+        console.error('[Express Webhook] Erro ao processar evento:', err);
+      });
+
+      // Quick acknowledge (< 200-800ms)
+      try {
+        await Promise.race([
+          processPromise,
+          new Promise((resolve) => setTimeout(resolve, 800)),
+        ]);
+      } catch {}
+
+      return res.status(200).json({
+        received: true,
+        eventId,
+        event: eventType,
+        itemId,
+        status: 'acknowledged',
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error('Erro no processamento do webhook:', error);
+      return res.status(500).json({ error: 'Webhook processing error', details: error?.message });
+    }
+  };
+
+  const handleWebhookGet = (_req: any, res: any) => {
+    const recentLogs = getRecentWebhookLogs();
+    return res.status(200).json({
+      status: 'active',
+      endpoint: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+      message: 'Endpoint de Webhook da Pluggy operacional e pronto para receber eventos.',
+      supportedEvents: [
+        'item/created',
+        'item/updated',
+        'item/error',
+        'item/deleted',
+        'transactions/created',
+        'transactions/updated',
+        'transactions/deleted',
+        'all',
+      ],
+      recentEventsCount: recentLogs.length,
+      recentEvents: recentLogs.slice(0, 15),
+      timestamp: new Date().toISOString(),
+    });
+  };
+
+  app.post("/api/pluggy/webhook", handleWebhookPost);
+  app.get("/api/pluggy/webhook", handleWebhookGet);
+  app.post("/api/open-finance/webhook", handleWebhookPost);
+  app.get("/api/open-finance/webhook", handleWebhookGet);
+
+  // 10. Webhooks Management (List, Register, Delete on Pluggy API)
+  app.get("/api/pluggy/webhooks", async (_req, res) => {
+    try {
+      const result = await listPluggyWebhooks();
+      if (!result.success) {
+        return res.status(result.status || 500).json(result);
+      }
+      return res.json({
+        success: true,
+        webhooks: result.webhooks || [],
+        targetWebhookUrl: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message });
     }
   });
+
+  app.post("/api/pluggy/webhooks", async (req, res) => {
+    try {
+      const { url, event } = req.body || {};
+      const targetUrl = url || 'https://vaanessa-ns.vercel.app/api/pluggy/webhook';
+      const result = await registerPluggyWebhook(targetUrl, event || 'all');
+      if (!result.success) {
+        return res.status(result.status || 500).json(result);
+      }
+      return res.status(201).json({
+        success: true,
+        message: 'Webhook registrado com sucesso na Pluggy!',
+        webhook: result.webhook,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  app.delete("/api/pluggy/webhooks", async (req, res) => {
+    try {
+      const webhookId = (req.query.id as string) || req.body?.id;
+      if (!webhookId) {
+        return res.status(400).json({ success: false, error: 'Informe o ID do webhook a ser deletado.' });
+      }
+      const result = await deletePluggyWebhook(webhookId);
+      return res.json(result);
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message });
+    }
+  });
+
+  // 11. Disconnect item from Pluggy
+  const handleDisconnect = async (req: any, res: any) => {
+    try {
+      const itemId = (req.query.itemId as string) || req.body?.itemId;
+      if (!itemId) {
+        return res.status(400).json({ success: false, error: 'itemId é obrigatório.' });
+      }
+      const result = await deletePluggyItem(String(itemId));
+      return res.json({
+        success: result.success,
+        message: result.success ? 'Conexão bancária desconectada com sucesso.' : result.error,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message });
+    }
+  };
+
+  app.delete("/api/pluggy/disconnect", handleDisconnect);
+  app.post("/api/pluggy/disconnect", handleDisconnect);
+  app.delete("/api/open-finance/disconnect", handleDisconnect);
+  app.post("/api/open-finance/disconnect", handleDisconnect);
 
 
   // API - Financial Insights Advisor
