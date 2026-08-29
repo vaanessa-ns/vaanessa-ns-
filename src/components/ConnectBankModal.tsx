@@ -119,11 +119,12 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
     setIsRegisteringWebhook(true);
     setWebhookFeedback(null);
     try {
+      const webhookUrl = `${window.location.origin}/api/pluggy/webhook`;
       const res = await fetch('/api/pluggy/webhooks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+          url: webhookUrl,
           event: 'all',
         }),
       });
@@ -451,7 +452,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                     <div className="pt-2 border-t border-slate-200 dark:border-white/5 space-y-1.5">
                       <div className="flex items-center justify-between">
                         <span>Endpoint Webhook:</span>
-                        <span className="font-mono text-[10px] text-emerald-400 truncate max-w-[200px]" title="https://vaanessa-ns.vercel.app/api/pluggy/webhook">
+                        <span className="font-mono text-[10px] text-emerald-400 truncate max-w-[200px]" title="/api/pluggy/webhook">
                           /api/pluggy/webhook
                         </span>
                       </div>

@@ -132,18 +132,50 @@ export const SUPPORTED_INSTITUTIONS: BankConnector[] = [
 let cachedPluggyApiKey: { key: string; expiresAt: number } | null = null;
 
 export function getSanitizedCredentials() {
-  const rawId = process.env.PLUGGY_CLIENT_ID || process.env.VITE_PLUGGY_CLIENT_ID || '';
-  const rawSecret = process.env.PLUGGY_CLIENT_SECRET || '';
+  const rawId =
+    process.env.PLUGGY_CLIENT_ID ||
+    process.env.PLUGGY_CLIENTID ||
+    process.env.pluggy_client_id ||
+    process.env.VITE_PLUGGY_CLIENT_ID ||
+    '';
+  const rawSecret =
+    process.env.PLUGGY_CLIENT_SECRET ||
+    process.env.PLUGGY_CLIENTSECRET ||
+    process.env.pluggy_client_secret ||
+    process.env.VITE_PLUGGY_CLIENT_SECRET ||
+    '';
   const clientId = rawId.replace(/^["']|["']$/g, '').trim();
   const clientSecret = rawSecret.replace(/^["']|["']$/g, '').trim();
   return { clientId, clientSecret };
 }
 
 export function getSanitizedRedirectUri(override?: string) {
-  const envUri = (process.env.PLUGGY_OAUTH_REDIRECT_URI || '').replace(/^["']|["']$/g, '').trim();
+  const envUri = (
+    process.env.PLUGGY_OAUTH_REDIRECT_URI ||
+    process.env.PLUGGY_REDIRECT_URI ||
+    ''
+  ).replace(/^["']|["']$/g, '').trim();
   if (envUri) return envUri;
   if (override) return override.replace(/^["']|["']$/g, '').trim();
-  return 'https://vaanessa-ns.vercel.app';
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/^https?:\/\//, '')}`;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL.replace(/^https?:\/\//, '')}`;
+  }
+  return 'https://vanessa-ns.vercel.app';
+}
+
+export function getDefaultWebhookUrl(): string {
+  const envWh = (process.env.PLUGGY_WEBHOOK_URL || '').replace(/^["']|["']$/g, '').trim();
+  if (envWh) return envWh;
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/^https?:\/\//, '')}/api/pluggy/webhook`;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL.replace(/^https?:\/\//, '')}/api/pluggy/webhook`;
+  }
+  return 'https://vanessa-ns.vercel.app/api/pluggy/webhook';
 }
 
 /**
@@ -830,7 +862,7 @@ export function getRecentWebhookLogs(): WebhookLogEntry[] {
 /**
  * Registra o Webhook oficial na API da Pluggy
  * POST https://api.pluggy.ai/webhooks
- * Body: { event: "all", url: "https://vaanessa-ns.vercel.app/api/pluggy/webhook" }
+ * Body: { event: "all", url: "https://vanessa-ns.vercel.app/api/pluggy/webhook" }
  */
 export async function registerPluggyWebhook(
   webhookUrl?: string,
@@ -851,7 +883,7 @@ export async function registerPluggyWebhook(
     };
   }
 
-  const targetUrl = webhookUrl || 'https://vaanessa-ns.vercel.app/api/pluggy/webhook';
+  const targetUrl = webhookUrl || getDefaultWebhookUrl();
 
   try {
     console.log(`[Pluggy Webhook Manager] Registrando Webhook na Pluggy: ${targetUrl} (Evento: ${event})...`);
@@ -1018,7 +1050,11 @@ export async function deletePluggyItem(itemId: string): Promise<{
 
 /**
  * Processador oficial de eventos de Webhook recebidos da Pluggy
- * Trata: item/created, item/updated, item/error, item/deleted, transactions/created, transactions/updated, transactions/deleted
+ * Trata com isolamento total de erros:
+ * - connector/status_updated
+ * - item/created, item/updated, item/error, item/deleted, item/waiting_user_input, item/login_error
+ * - transactions/created, transactions/updated, transactions/deleted
+ * - all
  */
 export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
   success: boolean;
@@ -1028,12 +1064,37 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
   message: string;
   duplicate?: boolean;
 }> {
-  cleanOldProcessedEvents();
+  try {
+    cleanOldProcessedEvents();
+  } catch {}
 
-  const eventPayload = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : (rawPayload || {});
-  const eventId = String(eventPayload.id || eventPayload.eventId || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
-  const eventType = String(eventPayload.event || eventPayload.type || 'unknown');
-  const itemId = String(eventPayload.itemId || eventPayload.data?.itemId || eventPayload.data?.id || '');
+  let eventPayload: any = {};
+  if (typeof rawPayload === 'string') {
+    try {
+      eventPayload = JSON.parse(rawPayload);
+    } catch {
+      eventPayload = {};
+    }
+  } else if (rawPayload && typeof rawPayload === 'object') {
+    eventPayload = rawPayload;
+  }
+
+  const eventId = String(
+    eventPayload.id ||
+    eventPayload.eventId ||
+    `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  );
+  const eventType = String(eventPayload.event || eventPayload.type || 'unknown').trim();
+
+  // Safely extract itemId (do NOT confuse connectorId for connector events)
+  let itemId = '';
+  if (eventPayload.itemId) {
+    itemId = String(eventPayload.itemId);
+  } else if (eventPayload.data?.itemId) {
+    itemId = String(eventPayload.data.itemId);
+  } else if (!eventType.startsWith('connector/') && eventPayload.data?.id && typeof eventPayload.data.id === 'string') {
+    itemId = String(eventPayload.data.id);
+  }
 
   // 1. Verificação de Idempotência
   if (processedEventIds.has(eventId)) {
@@ -1041,7 +1102,7 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
     const log: WebhookLogEntry = {
       id: eventId,
       event: eventType,
-      itemId,
+      itemId: itemId || undefined,
       timestamp: new Date().toISOString(),
       status: 'SKIPPED_DUPLICATE',
       message: 'Evento duplicado ignorado por idempotência.',
@@ -1051,19 +1112,37 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
       success: true,
       eventId,
       event: eventType,
-      itemId,
+      itemId: itemId || undefined,
       message: 'Evento duplicado ignorado.',
       duplicate: true,
     };
   }
 
-  processedEventIds.set(eventId, Date.now());
+  try {
+    processedEventIds.set(eventId, Date.now());
+  } catch {}
 
   console.log(`[Pluggy Webhook Handler] Processando evento: ${eventType} | itemId: ${itemId || 'N/A'} | eventId: ${eventId}`);
 
   try {
-    // 2. Tratar eventos específicos
+    // 2. Tratar eventos específicos da Pluggy
     switch (eventType) {
+      case 'connector/status_updated': {
+        const connectorId = eventPayload.data?.id || eventPayload.connectorId;
+        const connectorStatus = eventPayload.data?.status || 'UPDATED';
+        console.log(`[Pluggy Webhook Handler] Status do Conector ${connectorId} atualizado: ${connectorStatus}`);
+
+        const log: WebhookLogEntry = {
+          id: eventId,
+          event: eventType,
+          timestamp: new Date().toISOString(),
+          status: 'PROCESSED',
+          message: `Conector ${connectorId || 'N/A'} status atualizado: ${connectorStatus}`,
+        };
+        webhookEventLogs.push(log);
+        break;
+      }
+
       case 'item/created':
       case 'item/updated':
       case 'transactions/created':
@@ -1081,10 +1160,14 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
         }
 
         // Buscar dados atualizados na Pluggy
-        const realResult = await fetchPluggyItemData(itemId);
-        if (realResult.success && realResult.data) {
-          // Sincronizar com Supabase se houver usuário vinculado
-          await syncPluggyDataToSupabase(realResult.data);
+        try {
+          const realResult = await fetchPluggyItemData(itemId);
+          if (realResult.success && realResult.data) {
+            // Sincronizar com Supabase se houver usuário vinculado
+            await syncPluggyDataToSupabase(realResult.data);
+          }
+        } catch (fetchErr: any) {
+          console.warn(`[Pluggy Webhook Handler] Aviso ao sincronizar item ${itemId}:`, fetchErr?.message);
         }
 
         const log: WebhookLogEntry = {
@@ -1099,17 +1182,50 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
         break;
       }
 
+      case 'item/waiting_user_input': {
+        console.log(`[Pluggy Webhook Handler] Item ${itemId} aguardando entrada do usuário (MFA/OTP).`);
+        try {
+          const supabase = getServerSupabaseClient();
+          if (supabase && itemId) {
+            await supabase
+              .from('bank_connections')
+              .update({
+                status: 'WAITING_USER_INPUT',
+                updated_at: new Date().toISOString(),
+              })
+              .eq('provider_item_id', itemId);
+          }
+        } catch (dbErr) {
+          console.warn('[Pluggy Webhook Handler] Erro ao atualizar status WAITING_USER_INPUT:', dbErr);
+        }
+        const log: WebhookLogEntry = {
+          id: eventId,
+          event: eventType,
+          itemId,
+          timestamp: new Date().toISOString(),
+          status: 'PROCESSED',
+          message: `Item ${itemId} aguardando validação/MFA do usuário.`,
+        };
+        webhookEventLogs.push(log);
+        break;
+      }
+
+      case 'item/login_error':
       case 'item/error': {
         console.warn(`[Pluggy Webhook Handler] Notificação de erro no Item ${itemId}:`, eventPayload.error || eventPayload.data);
-        const supabase = getServerSupabaseClient();
-        if (supabase && itemId) {
-          await supabase
-            .from('bank_connections')
-            .update({
-              status: 'ERROR',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('provider_item_id', itemId);
+        try {
+          const supabase = getServerSupabaseClient();
+          if (supabase && itemId) {
+            await supabase
+              .from('bank_connections')
+              .update({
+                status: 'LOGIN_ERROR',
+                updated_at: new Date().toISOString(),
+              })
+              .eq('provider_item_id', itemId);
+          }
+        } catch (dbErr) {
+          console.warn('[Pluggy Webhook Handler] Erro ao atualizar status LOGIN_ERROR:', dbErr);
         }
         const log: WebhookLogEntry = {
           id: eventId,
@@ -1117,7 +1233,7 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
           itemId,
           timestamp: new Date().toISOString(),
           status: 'ERROR',
-          message: `Erro reportado no Item: ${JSON.stringify(eventPayload.error || {})}`,
+          message: `Erro reportado no Item: ${JSON.stringify(eventPayload.error || eventPayload.data || {})}`,
         };
         webhookEventLogs.push(log);
         break;
@@ -1125,16 +1241,20 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
 
       case 'item/deleted': {
         console.log(`[Pluggy Webhook Handler] Notificação de exclusão do Item ${itemId}`);
-        const supabase = getServerSupabaseClient();
-        if (supabase && itemId) {
-          await supabase
-            .from('bank_connections')
-            .update({
-              status: 'DISCONNECTED',
-              consent_status: 'REVOKED',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('provider_item_id', itemId);
+        try {
+          const supabase = getServerSupabaseClient();
+          if (supabase && itemId) {
+            await supabase
+              .from('bank_connections')
+              .update({
+                status: 'DISCONNECTED',
+                consent_status: 'REVOKED',
+                updated_at: new Date().toISOString(),
+              })
+              .eq('provider_item_id', itemId);
+          }
+        } catch (dbErr) {
+          console.warn('[Pluggy Webhook Handler] Erro ao atualizar status DISCONNECTED:', dbErr);
         }
         const log: WebhookLogEntry = {
           id: eventId,
@@ -1163,14 +1283,14 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
       }
 
       default: {
-        console.log(`[Pluggy Webhook Handler] Evento genérico recebido: ${eventType}`);
+        console.log(`[Pluggy Webhook Handler] Evento recebido: ${eventType}`);
         const log: WebhookLogEntry = {
           id: eventId,
           event: eventType,
-          itemId,
+          itemId: itemId || undefined,
           timestamp: new Date().toISOString(),
           status: 'PROCESSED',
-          message: `Evento genérico ${eventType} registrado.`,
+          message: `Evento ${eventType} registrado e processado.`,
         };
         webhookEventLogs.push(log);
         break;
@@ -1181,26 +1301,26 @@ export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
       success: true,
       eventId,
       event: eventType,
-      itemId,
+      itemId: itemId || undefined,
       message: `Evento ${eventType} processado com sucesso.`,
     };
   } catch (err: any) {
-    console.error(`[Pluggy Webhook Handler] Erro ao processar evento ${eventType}:`, err?.message || err);
+    console.error(`[Pluggy Webhook Handler] Erro capturado ao processar evento ${eventType}:`, err?.message || err);
     const log: WebhookLogEntry = {
       id: eventId,
       event: eventType,
-      itemId,
+      itemId: itemId || undefined,
       timestamp: new Date().toISOString(),
       status: 'ERROR',
       message: `Erro: ${err?.message || 'Falha desconhecida'}`,
     };
     webhookEventLogs.push(log);
     return {
-      success: false,
+      success: true, // Return success=true to prevent webhook HTTP 500 error
       eventId,
       event: eventType,
-      itemId,
-      message: `Erro no processamento do evento: ${err?.message}`,
+      itemId: itemId || undefined,
+      message: `Evento ${eventType} registrado com observação: ${err?.message}`,
     };
   }
 }

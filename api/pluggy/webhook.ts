@@ -2,9 +2,54 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   processPluggyWebhookEvent,
   getRecentWebhookLogs,
-  registerPluggyWebhook,
-  listPluggyWebhooks
 } from '../../server/openFinanceService';
+
+/**
+ * Safely parse incoming request body from various Vercel / serverless formats:
+ * - already-parsed JSON object
+ * - Buffer
+ * - raw string
+ * - readable stream
+ */
+async function parseBody(req: VercelRequest): Promise<any> {
+  if (req.body) {
+    if (typeof req.body === 'object') {
+      if (Buffer.isBuffer(req.body)) {
+        try {
+          return JSON.parse(req.body.toString('utf-8'));
+        } catch {
+          return {};
+        }
+      }
+      return req.body;
+    }
+    if (typeof req.body === 'string') {
+      try {
+        return JSON.parse(req.body);
+      } catch {
+        return {};
+      }
+    }
+  }
+
+  // If body is empty or stream was not buffered by Vercel
+  try {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req as any) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    if (chunks.length > 0) {
+      const rawText = Buffer.concat(chunks).toString('utf-8');
+      if (rawText) {
+        return JSON.parse(rawText);
+      }
+    }
+  } catch (streamErr) {
+    console.warn('[Webhook Parser] Erro ao ler stream do corpo:', streamErr);
+  }
+
+  return {};
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Always enforce JSON and CORS headers
@@ -22,32 +67,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ ok: true });
   }
 
-  // GET: Health Check & Webhook Status / Logs for diagnostics and Pluggy certification verification
+  // Determine current domain
+  const host = req.headers?.host || 'vanessa-ns.vercel.app';
+  const protocol = req.headers?.['x-forwarded-proto'] || 'https';
+  const currentEndpoint = `${protocol}://${host}/api/pluggy/webhook`;
+
+  // GET: Health Check & Webhook Status / Logs for diagnostics and Pluggy verification
   if (req.method === 'GET') {
     try {
       const recentLogs = getRecentWebhookLogs();
       return res.status(200).json({
         status: 'active',
-        endpoint: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
-        message: 'Endpoint de Webhook da Pluggy operacional e pronto para receber eventos.',
+        endpoint: currentEndpoint,
+        message: 'Endpoint de Webhook da Pluggy operacional e pronto para receber eventos em produção.',
         supportedEvents: [
+          'connector/status_updated',
           'item/created',
           'item/updated',
           'item/error',
           'item/deleted',
+          'item/waiting_user_input',
+          'item/login_error',
           'transactions/created',
           'transactions/updated',
           'transactions/deleted',
           'all',
         ],
         recentEventsCount: recentLogs.length,
-        recentEvents: recentLogs.slice(0, 15),
+        recentEvents: recentLogs.slice(0, 20),
         timestamp: new Date().toISOString(),
       });
     } catch (err: any) {
       return res.status(200).json({
         status: 'active',
-        endpoint: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+        endpoint: currentEndpoint,
         timestamp: new Date().toISOString(),
       });
     }
@@ -55,46 +108,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // POST: Receive Pluggy webhook events
   if (req.method === 'POST') {
-    let body = req.body;
-    if (typeof body === 'string') {
-      try {
-        body = JSON.parse(body);
-      } catch {
-        body = {};
-      }
-    }
-    body = body || {};
-
-    const eventType = body.event || body.type || 'unknown';
-    const eventId = body.id || body.eventId || `evt_${Date.now()}`;
-    const itemId = body.itemId || body.data?.itemId || body.data?.id;
-
-    console.log(`[API Webhook /api/pluggy/webhook] Recebido evento Pluggy: ${eventType} | itemId: ${itemId || 'N/A'} | eventId: ${eventId}`);
-
-    // Process event asynchronously in the background so HTTP response is returned immediately (< 200ms)
-    // to satisfy Pluggy's fast response requirement (preventing retry storms)
-    const processPromise = processPluggyWebhookEvent(body).catch((err) => {
-      console.error('[API Webhook] Erro no background worker de webhook:', err);
-    });
-
-    // We can await a very short grace period (or return immediately)
-    // Returning 200 OK fast
     try {
-      // Allow up to 1.5s for fast operations (Supabase update / idempotency check)
-      await Promise.race([
-        processPromise,
-        new Promise((resolve) => setTimeout(resolve, 800)),
-      ]);
-    } catch {}
+      const body = await parseBody(req);
 
-    return res.status(200).json({
-      received: true,
-      eventId,
-      event: eventType,
-      itemId,
-      status: 'acknowledged',
-      timestamp: new Date().toISOString(),
-    });
+      // Validate and sanitize basic event properties
+      const eventType = String(body?.event || body?.type || 'unknown').trim();
+      const eventId = String(body?.id || body?.eventId || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+      
+      // Accurately extract itemId (do NOT confuse with connectorId for connector events)
+      let itemId: string | null = null;
+      if (body?.itemId) {
+        itemId = String(body.itemId);
+      } else if (body?.data?.itemId) {
+        itemId = String(body.data.itemId);
+      } else if (!eventType.startsWith('connector/') && body?.data?.id && typeof body.data.id === 'string') {
+        itemId = String(body.data.id);
+      }
+
+      console.log(`[API Webhook /api/pluggy/webhook] Recebido evento: ${eventType} | itemId: ${itemId || 'N/A'} | eventId: ${eventId}`);
+
+      // Process event safely with full error isolation so no uncaught rejection crashes the serverless runtime
+      let processResult: any = { success: true };
+      try {
+        processResult = await processPluggyWebhookEvent(body);
+      } catch (procErr: any) {
+        console.error('[API Webhook] Erro capturado ao processar webhook:', procErr?.message || procErr);
+        processResult = {
+          success: true, // Acknowledge to avoid 500 retry storms from Pluggy
+          error: procErr?.message || 'Erro interno tratado',
+        };
+      }
+
+      // Fast, guaranteed 200 HTTP response to Pluggy
+      return res.status(200).json({
+        received: true,
+        eventId,
+        event: eventType,
+        itemId: itemId || undefined,
+        status: 'acknowledged',
+        result: processResult,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (criticalErr: any) {
+      console.error('[API Webhook] Erro crítico no handler de webhook:', criticalErr?.message || criticalErr);
+      // Guarantee 200 response with error details so Pluggy does not encounter HTTP 500
+      return res.status(200).json({
+        received: true,
+        status: 'error_handled',
+        error: criticalErr?.message || 'Falha ao processar payload do webhook',
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 
   return res.status(405).json({

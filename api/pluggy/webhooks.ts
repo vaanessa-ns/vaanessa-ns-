@@ -2,7 +2,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   registerPluggyWebhook,
   listPluggyWebhooks,
-  deletePluggyWebhook
+  deletePluggyWebhook,
+  getDefaultWebhookUrl,
 } from '../../server/openFinanceService';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -19,6 +20,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ ok: true });
   }
 
+  const defaultUrl = getDefaultWebhookUrl();
+
   // GET: List all webhooks registered in Pluggy
   if (req.method === 'GET') {
     try {
@@ -29,7 +32,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({
         success: true,
         webhooks: result.webhooks || [],
-        targetWebhookUrl: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+        targetWebhookUrl: defaultUrl,
       });
     } catch (err: any) {
       return res.status(500).json({
@@ -52,7 +55,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       body = body || {};
 
-      const url = body.url || 'https://vaanessa-ns.vercel.app/api/pluggy/webhook';
+      const url = body.url || defaultUrl;
       const event = body.event || 'all';
 
       const result = await registerPluggyWebhook(url, event);
@@ -84,7 +87,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           body = {};
         }
       }
-      const webhookId = req.query.id as string || body?.id;
+      const webhookId = (req.query.id as string) || body?.id;
 
       if (!webhookId) {
         return res.status(400).json({ success: false, error: 'Informe o ID do webhook a ser deletado.' });

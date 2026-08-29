@@ -17,6 +17,7 @@ import {
   registerPluggyWebhook,
   listPluggyWebhooks,
   deletePluggyWebhook,
+  getDefaultWebhookUrl,
 } from "./server/openFinanceService";
 
 dotenv.config();
@@ -290,58 +291,81 @@ async function startServer() {
   // 9. Webhook Receiver & Status (Pluggy push notifications)
   const handleWebhookPost = async (req: any, res: any) => {
     try {
-      const body = req.body || {};
-      const eventType = body.event || body.type || 'unknown';
-      const eventId = body.id || body.eventId || `evt_${Date.now()}`;
-      const itemId = body.itemId || body.data?.itemId || body.data?.id;
+      let body = req.body;
+      if (typeof body === 'string') {
+        try {
+          body = JSON.parse(body);
+        } catch {
+          body = {};
+        }
+      }
+      body = body || {};
+
+      const eventType = String(body.event || body.type || 'unknown').trim();
+      const eventId = String(body.id || body.eventId || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+      
+      let itemId: string | null = null;
+      if (body.itemId) {
+        itemId = String(body.itemId);
+      } else if (body.data?.itemId) {
+        itemId = String(body.data.itemId);
+      } else if (!eventType.startsWith('connector/') && body.data?.id && typeof body.data.id === 'string') {
+        itemId = String(body.data.id);
+      }
 
       console.log(`[Express /api/pluggy/webhook] Recebido evento Pluggy: ${eventType} | itemId: ${itemId || 'N/A'} | eventId: ${eventId}`);
 
-      // Background processing for fast 200 acknowledge
-      const processPromise = processPluggyWebhookEvent(body).catch((err) => {
-        console.error('[Express Webhook] Erro ao processar evento:', err);
-      });
-
-      // Quick acknowledge (< 200-800ms)
+      let processResult: any = { success: true };
       try {
-        await Promise.race([
-          processPromise,
-          new Promise((resolve) => setTimeout(resolve, 800)),
-        ]);
-      } catch {}
+        processResult = await processPluggyWebhookEvent(body);
+      } catch (procErr: any) {
+        console.error('[Express Webhook] Erro ao processar evento:', procErr);
+        processResult = { success: true, error: procErr?.message };
+      }
 
       return res.status(200).json({
         received: true,
         eventId,
         event: eventType,
-        itemId,
+        itemId: itemId || undefined,
         status: 'acknowledged',
+        result: processResult,
         timestamp: new Date().toISOString(),
       });
     } catch (error: any) {
       console.error('Erro no processamento do webhook:', error);
-      return res.status(500).json({ error: 'Webhook processing error', details: error?.message });
+      return res.status(200).json({
+        received: true,
+        status: 'error_handled',
+        error: error?.message || 'Falha ao processar payload do webhook',
+        timestamp: new Date().toISOString(),
+      });
     }
   };
 
-  const handleWebhookGet = (_req: any, res: any) => {
+  const handleWebhookGet = (req: any, res: any) => {
     const recentLogs = getRecentWebhookLogs();
+    const host = req.headers?.host || 'vanessa-ns.vercel.app';
+    const protocol = req.headers?.['x-forwarded-proto'] || 'https';
     return res.status(200).json({
       status: 'active',
-      endpoint: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
-      message: 'Endpoint de Webhook da Pluggy operacional e pronto para receber eventos.',
+      endpoint: `${protocol}://${host}/api/pluggy/webhook`,
+      message: 'Endpoint de Webhook da Pluggy operacional e pronto para receber eventos em produção.',
       supportedEvents: [
+        'connector/status_updated',
         'item/created',
         'item/updated',
         'item/error',
         'item/deleted',
+        'item/waiting_user_input',
+        'item/login_error',
         'transactions/created',
         'transactions/updated',
         'transactions/deleted',
         'all',
       ],
       recentEventsCount: recentLogs.length,
-      recentEvents: recentLogs.slice(0, 15),
+      recentEvents: recentLogs.slice(0, 20),
       timestamp: new Date().toISOString(),
     });
   };
@@ -361,7 +385,7 @@ async function startServer() {
       return res.json({
         success: true,
         webhooks: result.webhooks || [],
-        targetWebhookUrl: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+        targetWebhookUrl: getDefaultWebhookUrl(),
       });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err?.message });
@@ -371,7 +395,7 @@ async function startServer() {
   app.post("/api/pluggy/webhooks", async (req, res) => {
     try {
       const { url, event } = req.body || {};
-      const targetUrl = url || 'https://vaanessa-ns.vercel.app/api/pluggy/webhook';
+      const targetUrl = url || getDefaultWebhookUrl();
       const result = await registerPluggyWebhook(targetUrl, event || 'all');
       if (!result.success) {
         return res.status(result.status || 500).json(result);
