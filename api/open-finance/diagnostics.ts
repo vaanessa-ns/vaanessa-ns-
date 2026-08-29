@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getPluggyDiagnostics } from '../../server/openFinanceService';
+import { getPluggyDiagnostics } from '../_lib/pluggyClient';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Credentials', 'true');

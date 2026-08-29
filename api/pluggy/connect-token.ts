@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createPluggyConnectToken, getSanitizedRedirectUri } from '../../server/openFinanceService';
+import { createPluggyConnectToken, getSanitizedRedirectUri } from '../_lib/pluggyClient';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Always enforce JSON Content-Type and CORS headers

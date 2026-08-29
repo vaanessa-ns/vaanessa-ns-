@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { fetchPluggyItemData, generateSandboxBankPayload } from '../../server/openFinanceService';
+import { fetchPluggyItemData, generateSandboxBankPayload } from '../_lib/pluggyClient';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
