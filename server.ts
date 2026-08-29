@@ -18,6 +18,7 @@ import {
   listPluggyWebhooks,
   deletePluggyWebhook,
   getDefaultWebhookUrl,
+  getSanitizedRedirectUri,
 } from "./server/openFinanceService";
 
 dotenv.config();
@@ -81,19 +82,23 @@ async function startServer() {
       const tokenResult = await createPluggyConnectToken({
         itemId,
         clientUserId,
-        oauthRedirectUri: oauthRedirectUri || "https://vaanessa-ns.vercel.app",
+        oauthRedirectUri: getSanitizedRedirectUri(oauthRedirectUri),
         connectorId: connectorId ? Number(connectorId) : undefined,
       });
 
       if (!tokenResult.success || (!tokenResult.accessToken && !tokenResult.connectToken)) {
         const statusCode = tokenResult.status && tokenResult.status >= 400 && tokenResult.status < 600 ? tokenResult.status : 400;
+        const errorMsg = typeof tokenResult.error === 'string'
+          ? tokenResult.error
+          : (tokenResult.error ? JSON.stringify(tokenResult.error) : 'Falha ao gerar Connect Token na Pluggy');
         return res.status(statusCode).json({
           success: false,
-          error: tokenResult.error || "Falha ao gerar Connect Token na Pluggy",
-          step: tokenResult.step || "connect_token",
-          accessToken: "",
-          connectToken: "",
-          provider: tokenResult.provider || "pluggy",
+          error: errorMsg,
+          details: errorMsg,
+          step: tokenResult.step || 'connect_token',
+          accessToken: '',
+          connectToken: '',
+          provider: tokenResult.provider || 'pluggy',
           sandbox: tokenResult.sandbox || false,
         });
       }
@@ -107,10 +112,11 @@ async function startServer() {
       });
     } catch (error: any) {
       console.error("Error creating connect token:", error);
+      const errorDetails = typeof error?.message === 'string' ? error.message : JSON.stringify(error || 'Failed to initialize Open Finance connect token');
       return res.status(500).json({
         success: false,
         error: "Failed to initialize Open Finance connect token",
-        details: error?.message,
+        details: errorDetails,
         accessToken: "",
         connectToken: "",
         provider: "pluggy",

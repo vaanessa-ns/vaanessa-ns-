@@ -73,6 +73,58 @@ interface ConnectBankModalProps {
 
 type ModalStep = 'select' | 'consent' | 'requesting_token' | 'pluggy_widget' | 'syncing' | 'success';
 
+export function parseSafeErrorMessage(err: any, fallback = 'Ocorreu um erro na operação bancária.'): string {
+  if (!err) return fallback;
+  if (typeof err === 'string') {
+    const trimmed = err.trim();
+    if (!trimmed || trimmed === '[object Object]' || trimmed === 'object Object' || trimmed === '[object Error]') {
+      return fallback;
+    }
+    return trimmed;
+  }
+  if (err instanceof Error) {
+    if (err.message && err.message !== '[object Object]' && err.message !== 'object Object') {
+      return err.message;
+    }
+  }
+  if (typeof err === 'object') {
+    if (typeof err.message === 'string' && err.message && err.message !== '[object Object]') {
+      return err.message;
+    }
+    if (typeof err.error === 'string' && err.error && err.error !== '[object Object]') {
+      return err.error;
+    }
+    if (typeof err.error?.message === 'string' && err.error.message && err.error.message !== '[object Object]') {
+      return err.error.message;
+    }
+    if (typeof err.details === 'string' && err.details && err.details !== '[object Object]') {
+      return err.details;
+    }
+    if (typeof err.detail === 'string' && err.detail && err.detail !== '[object Object]') {
+      return err.detail;
+    }
+    if (typeof err.description === 'string' && err.description && err.description !== '[object Object]') {
+      return err.description;
+    }
+    if (typeof err.codeDescription === 'string' && err.codeDescription && err.codeDescription !== '[object Object]') {
+      return err.codeDescription;
+    }
+    if (typeof err.data?.message === 'string' && err.data.message && err.data.message !== '[object Object]') {
+      return err.data.message;
+    }
+    if (typeof err.data?.error === 'string' && err.data.error && err.data.error !== '[object Object]') {
+      return err.data.error;
+    }
+    try {
+      const json = JSON.stringify(err);
+      if (json && json !== '{}' && json !== '[]') {
+        return json;
+      }
+    } catch {}
+  }
+  return fallback;
+}
+
 export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onClose }) => {
   const { connectBank, isSyncingBank, authUser } = useFinance();
 
@@ -214,7 +266,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
         },
         body: JSON.stringify({
           clientUserId: authUser?.id,
-          connectorId: selectedBank?.connectorId,
+          connectorId: selectedBank?.connectorId && selectedBank.connectorId > 0 ? selectedBank.connectorId : undefined,
           oauthRedirectUri: window.location.origin,
         }),
       });
@@ -228,7 +280,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
           },
           body: JSON.stringify({
             clientUserId: authUser?.id,
-            connectorId: selectedBank?.connectorId,
+            connectorId: selectedBank?.connectorId && selectedBank.connectorId > 0 ? selectedBank.connectorId : undefined,
             oauthRedirectUri: window.location.origin,
           }),
         });
@@ -243,16 +295,23 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
         const rawText = await res.text().catch(() => '');
         console.error(`[ConnectBankModal] Servidor retornou resposta não-JSON (HTTP ${res.status}):`, rawText);
         throw new Error(
-          `O servidor retornou uma resposta inválida (HTTP ${res.status}). Verifique se as variáveis PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET estão configuradas na Vercel/Ambiente.`
+          `O servidor retornou uma resposta inválida (HTTP ${res.status}). Verifique se as variáveis PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET estão configuradas na Vercel.`
         );
       }
 
       if (!res.ok || (!tokenData?.connectToken && !tokenData?.accessToken)) {
-        const backendErrorMsg = tokenData?.error || tokenData?.details || 'Não foi possível gerar o Connect Token na Pluggy.';
+        const backendErrorMsg = parseSafeErrorMessage(
+          tokenData?.error || tokenData?.details || tokenData,
+          'Não foi possível gerar o Connect Token na Pluggy.'
+        );
         throw new Error(backendErrorMsg);
       }
 
       const token = tokenData.accessToken || tokenData.connectToken;
+      if (!token || typeof token !== 'string' || token.trim() === '') {
+        throw new Error('Token de acesso retornado pela Pluggy é inválido.');
+      }
+
       setConnectToken(token);
 
       // If sandbox fallback or simulation token
@@ -276,7 +335,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
           setStatusMessage(result.message);
         } else {
           setStep('consent');
-          setErrorMessage(result.message || 'Erro ao sincronizar.');
+          setErrorMessage(parseSafeErrorMessage(result.message, 'Erro ao sincronizar.'));
         }
         return;
       }
@@ -284,9 +343,10 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
       // Real Pluggy Connect widget flow
       setStep('pluggy_widget');
     } catch (err: any) {
-      console.error('Error starting connection:', err);
+      console.error('[ConnectBankModal] Erro ao iniciar conexão:', err);
       setStep('consent');
-      setErrorMessage(err.message || 'Falha ao inicializar o widget da Pluggy.');
+      const safeMsg = parseSafeErrorMessage(err, 'Falha ao inicializar o widget da Pluggy.');
+      setErrorMessage(safeMsg);
     }
   };
 
@@ -313,25 +373,27 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
         setStatusMessage(result.message);
       } else {
         setStep('consent');
-        setErrorMessage(result.message || 'Erro ao salvar os dados sincronizados.');
+        setErrorMessage(parseSafeErrorMessage(result.message, 'Erro ao salvar os dados sincronizados.'));
       }
     } catch (err: any) {
+      console.error('[ConnectBankModal] Erro na sincronização pós-conexão:', err);
       setStep('consent');
-      setErrorMessage(err.message || 'Falha na sincronização pós-conexão.');
+      setErrorMessage(parseSafeErrorMessage(err, 'Falha na sincronização pós-conexão.'));
     }
   };
 
   const handlePluggyError = (error: any) => {
-    console.error('Pluggy Connect Error:', error);
+    console.error('[ConnectBankModal] Pluggy Connect Error:', error);
     setStep('consent');
-    setErrorMessage(
-      typeof error === 'string'
-        ? error
-        : error?.message || 'A conexão foi interrompida ou não autorizada pelo banco.'
+    const safeMsg = parseSafeErrorMessage(
+      error,
+      'A conexão foi interrompida ou não autorizada pela instituição bancária.'
     );
+    setErrorMessage(safeMsg);
   };
 
   const handlePluggyClose = () => {
+    console.log('[ConnectBankModal] Pluggy Connect widget fechado.');
     if (step === 'pluggy_widget') {
       setStep('select');
     }
@@ -602,9 +664,14 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               </div>
 
               {errorMessage && (
-                <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-400 flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{errorMessage}</span>
+                <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-rose-400 flex items-start gap-3 animate-in fade-in">
+                  <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-rose-400" />
+                  <div className="flex-1 space-y-1 text-left">
+                    <p className="font-bold text-xs text-rose-300">Falha na Conexão Bancária</p>
+                    <p className="text-xs text-rose-200/90 leading-relaxed break-words font-normal">
+                      {parseSafeErrorMessage(errorMessage)}
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -681,9 +748,13 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               <PluggyConnect
                 connectToken={connectToken}
                 includeSandbox={true}
-                selectedConnectorId={selectedBank?.connectorId}
+                selectedConnectorId={selectedBank?.connectorId && selectedBank.connectorId > 0 ? selectedBank.connectorId : undefined}
                 onSuccess={handlePluggySuccess}
                 onError={handlePluggyError}
+                onLoadError={(loadError) => {
+                  console.error('[PluggyConnect] onLoadError:', loadError);
+                  handlePluggyError(loadError);
+                }}
                 onClose={handlePluggyClose}
               />
             </div>

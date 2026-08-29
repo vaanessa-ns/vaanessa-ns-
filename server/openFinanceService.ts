@@ -137,15 +137,19 @@ export function getSanitizedCredentials() {
     process.env.PLUGGY_CLIENTID ||
     process.env.pluggy_client_id ||
     process.env.VITE_PLUGGY_CLIENT_ID ||
+    process.env.REACT_APP_PLUGGY_CLIENT_ID ||
+    process.env.NEXT_PUBLIC_PLUGGY_CLIENT_ID ||
     '';
   const rawSecret =
     process.env.PLUGGY_CLIENT_SECRET ||
     process.env.PLUGGY_CLIENTSECRET ||
     process.env.pluggy_client_secret ||
     process.env.VITE_PLUGGY_CLIENT_SECRET ||
+    process.env.REACT_APP_PLUGGY_CLIENT_SECRET ||
+    process.env.NEXT_PUBLIC_PLUGGY_CLIENT_SECRET ||
     '';
-  const clientId = rawId.replace(/^["']|["']$/g, '').trim();
-  const clientSecret = rawSecret.replace(/^["']|["']$/g, '').trim();
+  const clientId = rawId.replace(/^["'`]|["'`]$/g, '').trim();
+  const clientSecret = rawSecret.replace(/^["'`]|["'`]$/g, '').trim();
   return { clientId, clientSecret };
 }
 
@@ -154,9 +158,11 @@ export function getSanitizedRedirectUri(override?: string) {
     process.env.PLUGGY_OAUTH_REDIRECT_URI ||
     process.env.PLUGGY_REDIRECT_URI ||
     ''
-  ).replace(/^["']|["']$/g, '').trim();
-  if (envUri) return envUri;
-  if (override) return override.replace(/^["']|["']$/g, '').trim();
+  ).replace(/^["'`]|["'`]$/g, '').trim();
+  if (envUri && envUri.startsWith('http')) return envUri;
+  if (override && typeof override === 'string' && override.startsWith('http') && !override.includes('localhost:5173')) {
+    return override.replace(/^["'`]|["'`]$/g, '').trim();
+  }
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
     return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/^https?:\/\//, '')}`;
   }
@@ -167,8 +173,8 @@ export function getSanitizedRedirectUri(override?: string) {
 }
 
 export function getDefaultWebhookUrl(): string {
-  const envWh = (process.env.PLUGGY_WEBHOOK_URL || '').replace(/^["']|["']$/g, '').trim();
-  if (envWh) return envWh;
+  const envWh = (process.env.PLUGGY_WEBHOOK_URL || '').replace(/^["'`]|["'`]$/g, '').trim();
+  if (envWh && envWh.startsWith('http')) return envWh;
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
     return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/^https?:\/\//, '')}/api/pluggy/webhook`;
   }
@@ -189,7 +195,7 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
     console.warn('[Pluggy Backend Auth] PLUGGY_CLIENT_ID ou PLUGGY_CLIENT_SECRET não configurados no ambiente do servidor.');
     return {
       apiKey: null,
-      error: 'Variáveis de ambiente PLUGGY_CLIENT_ID ou PLUGGY_CLIENT_SECRET não configuradas no servidor.',
+      error: 'Variáveis de ambiente PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET não configuradas no servidor da Vercel. Por favor, cadastre suas credenciais de produção no painel da Vercel (Project Settings > Environment Variables).',
       status: 401,
     };
   }
@@ -199,7 +205,7 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
     return { apiKey: cachedPluggyApiKey.key };
   }
 
-  console.log(`[Pluggy Backend Auth] [Etapa 1/2] Iniciando autenticação em https://api.pluggy.ai/auth (ID configurado: ${Boolean(clientId)}, Secret configurado: ${Boolean(clientSecret)})...`);
+  console.log(`[Pluggy Backend Auth] [Etapa 1/2] Iniciando autenticação em https://api.pluggy.ai/auth (ID: ${clientId ? `${clientId.slice(0, 6)}...` : 'N/A'}, Secret: ${clientSecret ? 'Configurado' : 'N/A'})...`);
 
   try {
     const res = await fetch('https://api.pluggy.ai/auth', {
@@ -218,7 +224,19 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
       let errorMsg = `HTTP ${res.status}`;
       try {
         const errorJson = await res.json();
-        errorMsg = errorJson?.message || errorJson?.codeDescription || JSON.stringify(errorJson);
+        if (typeof errorJson?.message === 'string') {
+          errorMsg = errorJson.message;
+        } else if (typeof errorJson?.error === 'string') {
+          errorMsg = errorJson.error;
+        } else if (typeof errorJson?.error?.message === 'string') {
+          errorMsg = errorJson.error.message;
+        } else if (typeof errorJson?.codeDescription === 'string') {
+          errorMsg = errorJson.codeDescription;
+        } else if (typeof errorJson?.details === 'string') {
+          errorMsg = errorJson.details;
+        } else {
+          errorMsg = JSON.stringify(errorJson);
+        }
       } catch {
         const errorText = await res.text().catch(() => '');
         if (errorText) errorMsg = errorText;
@@ -236,22 +254,22 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
       console.log('[Pluggy Backend Auth] [Etapa 1/2] Autenticação bem-sucedida. API Key obtida com sucesso.');
       cachedPluggyApiKey = {
         key: data.apiKey,
-        expiresAt: now + 100 * 60 * 1000, // ~100 minutos (duração do token da Pluggy é de ~2 horas)
+        expiresAt: now + 100 * 60 * 1000, // ~100 minutos
       };
       return { apiKey: data.apiKey };
     } else {
       console.warn('[Pluggy Backend Auth] [Etapa 1/2] Resposta da Pluggy não continha o campo apiKey.');
       return {
         apiKey: null,
-        error: 'Resposta da Pluggy não retornou a chave de API.',
+        error: 'Resposta da Pluggy não retornou a chave de API (apiKey).',
         status: 500,
       };
     }
   } catch (err: any) {
-    console.error('[Pluggy Backend Auth] [Etapa 1/2] Erro de rede/comunicação ao conectar com api.pluggy.ai/auth:', err?.message || err);
+    console.error('[Pluggy Backend Auth] [Etapa 1/2] Erro de comunicação com api.pluggy.ai/auth:', err?.message || err);
     return {
       apiKey: null,
-      error: `Erro ao conectar com api.pluggy.ai/auth: ${err?.message || 'Falha de rede'}`,
+      error: `Erro ao conectar com api.pluggy.ai/auth: ${err?.message || 'Falha de conexão de rede'}`,
       status: 500,
     };
   }
@@ -311,14 +329,14 @@ export async function createPluggyConnectToken(options?: {
       oauthRedirectUri: redirectUri,
     };
 
-    if (options?.clientUserId) {
-      optionsObj.clientUserId = String(options.clientUserId);
+    if (options?.clientUserId && typeof options.clientUserId === 'string' && options.clientUserId.trim() && options.clientUserId !== 'undefined') {
+      optionsObj.clientUserId = String(options.clientUserId).trim();
     }
 
     payload.options = optionsObj;
 
-    if (options?.itemId) {
-      payload.itemId = String(options.itemId);
+    if (options?.itemId && typeof options.itemId === 'string' && options.itemId.trim()) {
+      payload.itemId = String(options.itemId).trim();
     }
 
     const res = await fetch('https://api.pluggy.ai/connect_token', {
@@ -347,7 +365,19 @@ export async function createPluggyConnectToken(options?: {
       let errorDetail = `HTTP ${res.status}`;
       try {
         const errJson = await res.json();
-        errorDetail = errJson?.message || errJson?.codeDescription || JSON.stringify(errJson);
+        if (typeof errJson?.message === 'string') {
+          errorDetail = errJson.message;
+        } else if (typeof errJson?.error === 'string') {
+          errorDetail = errJson.error;
+        } else if (typeof errJson?.error?.message === 'string') {
+          errorDetail = errJson.error.message;
+        } else if (typeof errJson?.codeDescription === 'string') {
+          errorDetail = errJson.codeDescription;
+        } else if (typeof errJson?.details === 'string') {
+          errorDetail = errJson.details;
+        } else {
+          errorDetail = JSON.stringify(errJson);
+        }
       } catch {
         const errText = await res.text().catch(() => '');
         if (errText) errorDetail = errText;
@@ -1410,7 +1440,7 @@ export async function getPluggyDiagnostics() {
     sandboxReady: true,
     mode: authStatus === 'SUCCESS' ? 'pluggy-live' : 'simulation-sandbox',
     supportedConnectorsCount: SUPPORTED_INSTITUTIONS.length,
-    webhookEndpoint: 'https://vaanessa-ns.vercel.app/api/pluggy/webhook',
+    webhookEndpoint: getDefaultWebhookUrl(),
     registeredWebhooksCount: registeredWebhooks.length,
     registeredWebhooks,
     recentWebhookEventsCount: recentLogs.length,

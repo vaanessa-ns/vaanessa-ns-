@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createPluggyConnectToken } from '../../server/openFinanceService';
+import { createPluggyConnectToken, getSanitizedRedirectUri } from '../../server/openFinanceService';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Always enforce JSON Content-Type and CORS headers
@@ -42,16 +42,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const tokenResult = await createPluggyConnectToken({
       itemId,
       clientUserId,
-      oauthRedirectUri: oauthRedirectUri || 'https://vaanessa-ns.vercel.app',
+      oauthRedirectUri: getSanitizedRedirectUri(oauthRedirectUri),
       connectorId: connectorId ? Number(connectorId) : undefined,
     });
 
     if (!tokenResult.success || (!tokenResult.accessToken && !tokenResult.connectToken)) {
       const statusCode = tokenResult.status && tokenResult.status >= 400 && tokenResult.status < 600 ? tokenResult.status : 400;
-      console.warn(`[API /api/pluggy/connect-token] Falha ao obter Connect Token (HTTP ${statusCode}):`, tokenResult.error);
+      const errorMsg = typeof tokenResult.error === 'string'
+        ? tokenResult.error
+        : (tokenResult.error ? JSON.stringify(tokenResult.error) : 'Não foi possível obter o Connect Token da Pluggy.');
+
+      console.warn(`[API /api/pluggy/connect-token] Falha ao obter Connect Token (HTTP ${statusCode}):`, errorMsg);
       return res.status(statusCode).json({
         success: false,
-        error: tokenResult.error || 'Não foi possível obter o Connect Token da Pluggy.',
+        error: errorMsg,
+        details: errorMsg,
         step: tokenResult.step || 'connect_token',
         accessToken: '',
         connectToken: '',
@@ -70,10 +75,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (error: any) {
     console.error('[API /api/pluggy/connect-token] Erro inesperado no handler:', error?.message || error);
+    const errorDetails = typeof error?.message === 'string' ? error.message : JSON.stringify(error || 'Erro inesperado no servidor');
     return res.status(500).json({
       success: false,
       error: 'Falha interna ao inicializar sessão do Pluggy Connect.',
-      details: error?.message || 'Erro inesperado no servidor',
+      details: errorDetails,
       accessToken: '',
       connectToken: '',
       provider: 'pluggy',
