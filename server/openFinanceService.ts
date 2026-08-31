@@ -339,15 +339,21 @@ export async function createPluggyConnectToken(options?: {
     console.log('[Pluggy Backend ConnectToken] [Etapa 2/2] Gerando Connect Token em https://api.pluggy.ai/connect_token com header X-API-KEY...');
 
     const redirectUri = getSanitizedRedirectUri(options?.oauthRedirectUri);
+    const webhookUrl = getDefaultWebhookUrl();
 
     const payload: any = {};
 
     const optionsObj: any = {
       oauthRedirectUri: redirectUri,
+      webhookUrl: webhookUrl,
     };
 
     if (options?.clientUserId && typeof options.clientUserId === 'string' && options.clientUserId.trim() && options.clientUserId !== 'undefined') {
       optionsObj.clientUserId = String(options.clientUserId).trim();
+    }
+
+    if (options?.connectorId && !isNaN(Number(options.connectorId)) && Number(options.connectorId) > 0) {
+      optionsObj.connectorId = Number(options.connectorId);
     }
 
     payload.options = optionsObj;

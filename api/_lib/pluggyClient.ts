@@ -68,7 +68,7 @@ export function getSanitizedRedirectUri(override?: string): string {
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL.replace(/^https?:\/\//, '')}`;
   }
-  return 'https://vaanessa-ns.vercel.app';
+  return 'https://vanessa-ns.vercel.app';
 }
 
 export function getDefaultWebhookUrl(): string {
@@ -80,7 +80,7 @@ export function getDefaultWebhookUrl(): string {
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL.replace(/^https?:\/\//, '')}/api/pluggy/webhook`;
   }
-  return 'https://vaanessa-ns.vercel.app/api/pluggy/webhook';
+  return 'https://vanessa-ns.vercel.app/api/pluggy/webhook';
 }
 
 let cachedPluggyApiKey: { key: string; expiresAt: number } | null = null;
@@ -303,15 +303,21 @@ export async function createPluggyConnectToken(options?: {
   }
 
   const redirectUri = envSummary.redirectUri;
+  const webhookUrl = getDefaultWebhookUrl();
 
   try {
     const payload: any = {};
     const optionsObj: any = {
       oauthRedirectUri: redirectUri,
+      webhookUrl: webhookUrl,
     };
 
     if (options?.clientUserId && typeof options.clientUserId === 'string' && options.clientUserId.trim() && options.clientUserId !== 'undefined') {
       optionsObj.clientUserId = String(options.clientUserId).trim();
+    }
+
+    if (options?.connectorId && !isNaN(Number(options.connectorId)) && Number(options.connectorId) > 0) {
+      optionsObj.connectorId = Number(options.connectorId);
     }
 
     payload.options = optionsObj;

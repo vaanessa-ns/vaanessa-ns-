@@ -40,13 +40,13 @@ const POPULAR_INSTITUTIONS: InstitutionOption[] = [
   { id: 'santander', name: 'Banco Santander', code: '033', connectorId: 33, color: '#EA1D25', bgColor: 'rgba(234, 29, 37, 0.15)', popular: true },
   { id: 'bb', name: 'Banco do Brasil', code: '001', connectorId: 1, color: '#FCDE00', bgColor: 'rgba(252, 222, 0, 0.15)', popular: true },
   { id: 'inter', name: 'Banco Inter', code: '077', connectorId: 77, color: '#FF7A00', bgColor: 'rgba(255, 122, 0, 0.15)', popular: true },
+  { id: 'picpay', name: 'PicPay', code: '380', connectorId: 601, color: '#11C76F', bgColor: 'rgba(17, 199, 111, 0.15)', popular: true },
   { id: 'c6', name: 'C6 Bank', code: '336', connectorId: 336, color: '#242424', bgColor: 'rgba(255, 255, 255, 0.1)', popular: true },
   { id: 'caixa', name: 'Caixa Econômica', code: '104', connectorId: 104, color: '#0066B3', bgColor: 'rgba(0, 102, 179, 0.15)', popular: true },
+  { id: 'sicoob', name: 'Sicoob', code: '756', connectorId: 756, color: '#003641', bgColor: 'rgba(0, 54, 65, 0.2)', popular: true },
+  { id: 'sicredi', name: 'Sicredi', code: '748', connectorId: 748, color: '#008542', bgColor: 'rgba(0, 133, 66, 0.15)' },
   { id: 'btg', name: 'BTG Pactual', code: '208', connectorId: 208, color: '#1B365D', bgColor: 'rgba(27, 54, 93, 0.2)' },
   { id: 'xp', name: 'XP Investimentos', code: '102', connectorId: 102, color: '#000000', bgColor: 'rgba(255, 255, 255, 0.1)' },
-  { id: 'sicoob', name: 'Sicoob', code: '756', connectorId: 756, color: '#003641', bgColor: 'rgba(0, 54, 65, 0.2)' },
-  { id: 'sicredi', name: 'Sicredi', code: '748', connectorId: 748, color: '#008542', bgColor: 'rgba(0, 133, 66, 0.15)' },
-  { id: '201', name: 'Pluggy Sandbox Test Bank', code: '201', connectorId: 201, color: '#10B981', bgColor: 'rgba(16, 185, 129, 0.15)', badge: 'SANDBOX', isSandbox: true, popular: true },
 ];
 
 interface PluggyDiagnostics {
@@ -314,33 +314,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
 
       setConnectToken(token);
 
-      // If sandbox fallback or simulation token
-      if (tokenData.sandbox || String(token).startsWith('sandbox_token_')) {
-        // Direct sandbox sync
-        setStep('syncing');
-        setStatusMessage('Sincronizando dados simulados de Open Finance...');
-        const result = await connectBank(
-          String(selectedBank?.connectorId || 201),
-          selectedBank?.name || 'Pluggy Sandbox Test Bank'
-        );
-
-        if (result.success) {
-          setSyncDetails({
-            institutionName: selectedBank?.name || 'Pluggy Sandbox Test Bank',
-            accountsCount: 2,
-            cardsCount: 1,
-            transactionsCount: 6,
-          });
-          setStep('success');
-          setStatusMessage(result.message);
-        } else {
-          setStep('consent');
-          setErrorMessage(parseSafeErrorMessage(result.message, 'Erro ao sincronizar.'));
-        }
-        return;
-      }
-
-      // Real Pluggy Connect widget flow
+      // Real Pluggy Connect widget flow for live Open Finance
       setStep('pluggy_widget');
     } catch (err: any) {
       console.error('[ConnectBankModal] Erro ao iniciar conexão:', err);
@@ -350,11 +324,25 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
     }
   };
 
+  const handlePluggyEvent = (eventData: any) => {
+    console.log('[ConnectBankModal] Pluggy Event:', eventData);
+    const eventName = eventData?.event || eventData?.type || '';
+    if (eventName === 'item/created' || eventName === 'item/updated') {
+      setStatusMessage('Autorização bancária recebida. Concluindo vinculação dos dados...');
+    } else if (eventName === 'item/waiting_user_input') {
+      setStatusMessage('Aguardando validação ou código de segurança (MFA/Token) no aplicativo do banco...');
+    }
+  };
+
   const handlePluggySuccess = async (data: any) => {
     const item = data?.item;
-    const itemId = item?.id;
+    const itemId = item?.id || data?.itemId || data?.id;
     const institutionName = item?.connector?.name || selectedBank?.name || 'Instituição Conectada';
     const connectorId = String(item?.connector?.id || selectedBank?.connectorId || '0');
+
+    if (!itemId) {
+      console.warn('[ConnectBankModal] Sucesso reportado mas sem itemId no payload:', data);
+    }
 
     setStep('syncing');
     setStatusMessage(`Importando contas, saldos e movimentações reais de ${institutionName}...`);
@@ -747,7 +735,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
             <div className="w-full h-full min-h-[500px] flex flex-col rounded-2xl overflow-hidden animate-in fade-in">
               <PluggyConnect
                 connectToken={connectToken}
-                includeSandbox={true}
+                includeSandbox={false}
                 selectedConnectorId={selectedBank?.connectorId && selectedBank.connectorId > 0 ? selectedBank.connectorId : undefined}
                 onSuccess={handlePluggySuccess}
                 onError={handlePluggyError}
@@ -755,6 +743,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                   console.error('[PluggyConnect] onLoadError:', loadError);
                   handlePluggyError(loadError);
                 }}
+                onEvent={handlePluggyEvent}
                 onClose={handlePluggyClose}
               />
             </div>
