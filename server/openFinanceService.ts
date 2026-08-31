@@ -1,5 +1,22 @@
 import dotenv from 'dotenv';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import {
+  recordApiLog,
+  getConnectTokenErrorLogs,
+  getConnectTokenDiagnosticReport,
+  getApiLogs,
+  ApiExecutionLog,
+  ConnectTokenDiagnosticReport,
+} from '../api/_lib/diagnosticLogger';
+
+export {
+  recordApiLog,
+  getConnectTokenErrorLogs,
+  getConnectTokenDiagnosticReport,
+  getApiLogs,
+  type ApiExecutionLog,
+  type ConnectTokenDiagnosticReport,
+};
 
 dotenv.config();
 

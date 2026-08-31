@@ -3,10 +3,28 @@
  * Zero heavy external dependencies (uses native fetch)
  */
 
+import {
+  recordApiLog,
+  getConnectTokenErrorLogs,
+  getConnectTokenDiagnosticReport,
+  getApiLogs,
+  ApiExecutionLog,
+  ConnectTokenDiagnosticReport,
+} from './diagnosticLogger';
+
 export interface PluggyCredentials {
   clientId: string;
   clientSecret: string;
 }
+
+export {
+  recordApiLog,
+  getConnectTokenErrorLogs,
+  getConnectTokenDiagnosticReport,
+  getApiLogs,
+  type ApiExecutionLog,
+  type ConnectTokenDiagnosticReport,
+};
 
 export function getSanitizedCredentials(): PluggyCredentials {
   const rawId =
@@ -71,12 +89,30 @@ let cachedPluggyApiKey: { key: string; expiresAt: number } | null = null;
  * Autentica com a API da Pluggy e obtém o X-API-KEY
  */
 export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?: string; status?: number }> {
+  const startTime = Date.now();
   const { clientId, clientSecret } = getSanitizedCredentials();
+  const envSummary = {
+    hasClientId: Boolean(clientId),
+    hasClientSecret: Boolean(clientSecret),
+    maskedClientId: clientId ? `${clientId.slice(0, 4)}...${clientId.slice(-4)}` : 'Não configurado',
+    redirectUri: getSanitizedRedirectUri(),
+    nodeEnv: process.env.NODE_ENV || 'production',
+  };
 
   if (!clientId || !clientSecret) {
+    const errorMsg = 'Variáveis de ambiente PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET não configuradas no servidor da Vercel. Por favor, cadastre suas credenciais de produção no painel da Vercel (Project Settings > Environment Variables).';
+    recordApiLog({
+      endpoint: 'https://api.pluggy.ai/auth',
+      method: 'POST',
+      statusCode: 401,
+      step: 'config',
+      error: errorMsg,
+      durationMs: Date.now() - startTime,
+      envSummary,
+    });
     return {
       apiKey: null,
-      error: 'Variáveis de ambiente PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET não configuradas no servidor da Vercel. Por favor, cadastre suas credenciais de produção no painel da Vercel (Project Settings > Environment Variables).',
+      error: errorMsg,
       status: 401,
     };
   }
@@ -99,10 +135,14 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
       }),
     });
 
+    const durationMs = Date.now() - startTime;
+
     if (!res.ok) {
       let errorMsg = `HTTP ${res.status}`;
+      let rawDetails = '';
       try {
         const errorJson = await res.json();
+        rawDetails = JSON.stringify(errorJson);
         if (typeof errorJson?.message === 'string') {
           errorMsg = errorJson.message;
         } else if (typeof errorJson?.error === 'string') {
@@ -114,15 +154,32 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
         } else if (typeof errorJson?.details === 'string') {
           errorMsg = errorJson.details;
         } else {
-          errorMsg = JSON.stringify(errorJson);
+          errorMsg = rawDetails;
         }
       } catch {
         const errorText = await res.text().catch(() => '');
-        if (errorText) errorMsg = errorText;
+        if (errorText) {
+          errorMsg = errorText;
+          rawDetails = errorText;
+        }
       }
+
+      const fullError = `Falha na autenticação com a Pluggy (HTTP ${res.status}): ${errorMsg}`;
+      recordApiLog({
+        endpoint: 'https://api.pluggy.ai/auth',
+        method: 'POST',
+        statusCode: res.status,
+        step: 'auth',
+        error: fullError,
+        details: rawDetails,
+        durationMs,
+        responsePreview: rawDetails || errorMsg,
+        envSummary,
+      });
+
       return {
         apiKey: null,
-        error: `Falha na autenticação com a Pluggy (HTTP ${res.status}): ${errorMsg}`,
+        error: fullError,
         status: res.status,
       };
     }
@@ -133,18 +190,49 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
         key: data.apiKey,
         expiresAt: now + 100 * 60 * 1000,
       };
+
+      recordApiLog({
+        endpoint: 'https://api.pluggy.ai/auth',
+        method: 'POST',
+        statusCode: 200,
+        step: 'auth',
+        durationMs,
+        responsePreview: 'API Key obtida com sucesso',
+        envSummary,
+      });
+
       return { apiKey: data.apiKey };
     } else {
+      const errorMsg = 'Resposta da Pluggy não retornou a chave de API (apiKey).';
+      recordApiLog({
+        endpoint: 'https://api.pluggy.ai/auth',
+        method: 'POST',
+        statusCode: 500,
+        step: 'auth',
+        error: errorMsg,
+        durationMs,
+        envSummary,
+      });
       return {
         apiKey: null,
-        error: 'Resposta da Pluggy não retornou a chave de API (apiKey).',
+        error: errorMsg,
         status: 500,
       };
     }
   } catch (err: any) {
+    const errorMsg = `Erro ao conectar com api.pluggy.ai/auth: ${err?.message || 'Falha de conexão de rede'}`;
+    recordApiLog({
+      endpoint: 'https://api.pluggy.ai/auth',
+      method: 'POST',
+      statusCode: 500,
+      step: 'network',
+      error: errorMsg,
+      durationMs: Date.now() - startTime,
+      envSummary,
+    });
     return {
       apiKey: null,
-      error: `Erro ao conectar com api.pluggy.ai/auth: ${err?.message || 'Falha de conexão de rede'}`,
+      error: errorMsg,
       status: 500,
     };
   }
@@ -168,23 +256,53 @@ export async function createPluggyConnectToken(options?: {
   step?: 'auth' | 'connect_token' | 'config' | 'network';
   status?: number;
 }> {
+  const startTime = Date.now();
+  const { clientId, clientSecret } = getSanitizedCredentials();
+  const envSummary = {
+    hasClientId: Boolean(clientId),
+    hasClientSecret: Boolean(clientSecret),
+    maskedClientId: clientId ? `${clientId.slice(0, 4)}...${clientId.slice(-4)}` : 'Não configurado',
+    redirectUri: getSanitizedRedirectUri(options?.oauthRedirectUri),
+    nodeEnv: process.env.NODE_ENV || 'production',
+  };
+
+  const reqPayloadRecord = {
+    connectorId: options?.connectorId,
+    clientUserId: options?.clientUserId,
+    itemId: options?.itemId,
+    oauthRedirectUri: envSummary.redirectUri,
+    hasCredentials: envSummary.hasClientId && envSummary.hasClientSecret,
+  };
+
   const authResult = await getPluggyApiKey();
   const apiKey = authResult.apiKey;
 
   if (!apiKey) {
+    const errorMsg = authResult.error || 'Credenciais Pluggy não configuradas ou inválidas.';
+    recordApiLog({
+      endpoint: '/api/pluggy/connect-token',
+      method: 'POST',
+      statusCode: authResult.status || 401,
+      step: 'auth',
+      error: errorMsg,
+      durationMs: Date.now() - startTime,
+      request: reqPayloadRecord,
+      envSummary,
+    });
+
     return {
       success: false,
       accessToken: '',
       connectToken: '',
       provider: 'pluggy',
       sandbox: false,
-      error: authResult.error || 'Credenciais Pluggy não configuradas ou inválidas.',
+      error: errorMsg,
       step: 'auth',
       status: authResult.status || 401,
     };
   }
 
-  const redirectUri = getSanitizedRedirectUri(options?.oauthRedirectUri);
+  const redirectUri = envSummary.redirectUri;
 
   try {
     const payload: any = {};
@@ -212,9 +330,23 @@ export async function createPluggyConnectToken(options?: {
       body: JSON.stringify(payload),
     });
 
+    const durationMs = Date.now() - startTime;
+
     if (res.ok) {
       const data = await res.json();
       const token = data?.accessToken || '';
+
+      recordApiLog({
+        endpoint: '/api/pluggy/connect-token',
+        method: 'POST',
+        statusCode: 200,
+        step: 'connect_token',
+        durationMs,
+        request: reqPayloadRecord,
+        responsePreview: token ? `JWT Token gerado (${token.slice(0, 16)}...)` : 'OK',
+        envSummary,
+      });
+
       return {
         success: true,
         accessToken: token,
@@ -225,8 +357,10 @@ export async function createPluggyConnectToken(options?: {
       };
     } else {
       let errorDetail = `HTTP ${res.status}`;
+      let rawJson = '';
       try {
         const errJson = await res.json();
+        rawJson = JSON.stringify(errJson);
         if (typeof errJson?.message === 'string') {
           errorDetail = errJson.message;
         } else if (typeof errJson?.error === 'string') {
@@ -238,31 +372,61 @@ export async function createPluggyConnectToken(options?: {
         } else if (typeof errJson?.details === 'string') {
           errorDetail = errJson.details;
         } else {
-          errorDetail = JSON.stringify(errJson);
+          errorDetail = rawJson;
         }
       } catch {
         const errText = await res.text().catch(() => '');
-        if (errText) errorDetail = errText;
+        if (errText) {
+          errorDetail = errText;
+          rawJson = errText;
+        }
       }
+
+      const fullError = `Erro ao gerar Connect Token na Pluggy (HTTP ${res.status}): ${errorDetail}`;
+      recordApiLog({
+        endpoint: '/api/pluggy/connect-token',
+        method: 'POST',
+        statusCode: res.status,
+        step: 'connect_token',
+        error: fullError,
+        details: rawJson,
+        durationMs,
+        request: reqPayloadRecord,
+        responsePreview: rawJson || errorDetail,
+        envSummary,
+      });
+
       return {
         success: false,
         accessToken: '',
         connectToken: '',
         provider: 'pluggy',
         sandbox: false,
-        error: `Erro ao gerar Connect Token na Pluggy (HTTP ${res.status}): ${errorDetail}`,
+        error: fullError,
         step: 'connect_token',
         status: res.status,
       };
     }
   } catch (e: any) {
+    const errorMsg = `Falha de comunicação com api.pluggy.ai: ${e?.message || 'Erro de conexão'}`;
+    recordApiLog({
+      endpoint: '/api/pluggy/connect-token',
+      method: 'POST',
+      statusCode: 500,
+      step: 'network',
+      error: errorMsg,
+      durationMs: Date.now() - startTime,
+      request: reqPayloadRecord,
+      envSummary,
+    });
+
     return {
       success: false,
       accessToken: '',
       connectToken: '',
       provider: 'pluggy',
       sandbox: false,
-      error: `Falha de comunicação com api.pluggy.ai: ${e?.message || 'Erro de conexão'}`,
+      error: errorMsg,
       step: 'network',
       status: 500,
     };
@@ -342,6 +506,9 @@ export async function getPluggyDiagnostics() {
     }
   }
 
+  const connectTokenErrors = getConnectTokenErrorLogs(10);
+  const connectTokenDiagnosticReport = getConnectTokenDiagnosticReport();
+
   return {
     isConfigured,
     maskedId,
@@ -355,6 +522,9 @@ export async function getPluggyDiagnostics() {
     mode: authStatus === 'SUCCESS' ? 'pluggy-live' : 'simulation-sandbox',
     supportedConnectorsCount: 13,
     webhookEndpoint: getDefaultWebhookUrl(),
+    connectTokenErrorsCount: connectTokenErrors.length,
+    connectTokenErrors,
+    connectTokenDiagnosticReport,
     timestamp: new Date().toISOString(),
   };
 }

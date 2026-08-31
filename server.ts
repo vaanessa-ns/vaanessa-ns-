@@ -5,13 +5,9 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import {
-  createPluggyConnectToken,
   getSupportedInstitutions,
   fetchPluggyItemData,
-  deletePluggyItem,
   generateSandboxBankPayload,
-  getPluggyDiagnostics,
-  getPluggyApiKey,
   processPluggyWebhookEvent,
   getRecentWebhookLogs,
   registerPluggyWebhook,
@@ -20,6 +16,15 @@ import {
   getDefaultWebhookUrl,
   getSanitizedRedirectUri,
 } from "./server/openFinanceService";
+import {
+  createPluggyConnectToken,
+  deletePluggyItem,
+  getPluggyDiagnostics,
+  getPluggyApiKey,
+  getConnectTokenErrorLogs,
+  getConnectTokenDiagnosticReport,
+  getApiLogs,
+} from "./api/_lib/pluggyClient";
 
 dotenv.config();
 
@@ -446,10 +451,76 @@ async function startServer() {
     }
   };
 
-  app.delete("/api/pluggy/disconnect", handleDisconnect);
-  app.post("/api/pluggy/disconnect", handleDisconnect);
-  app.delete("/api/open-finance/disconnect", handleDisconnect);
-  app.post("/api/open-finance/disconnect", handleDisconnect);
+  // 12. Error and Execution Diagnostic Logs Endpoint
+  const handleLogs = async (req: any, res: any) => {
+    try {
+      const { limit, endpoint, errorsOnly, action, format } = req.query || {};
+      const limitNum = limit ? Math.min(Math.max(1, parseInt(String(limit), 10) || 10), 50) : 10;
+
+      if (action === 'test' || req.method === 'POST') {
+        await createPluggyConnectToken({ clientUserId: 'diagnostic-probe-user' });
+      }
+
+      const connectTokenErrorLogs = getConnectTokenErrorLogs(limitNum);
+      const diagnosticReport = getConnectTokenDiagnosticReport();
+      const allFilteredLogs = getApiLogs({
+        endpoint: typeof endpoint === 'string' ? endpoint : undefined,
+        errorsOnly: errorsOnly === 'true' || errorsOnly === '1',
+        limit: limitNum,
+      });
+
+      if (format === 'text') {
+        let textOutput = `=== RELATÓRIO DE DIAGNÓSTICO PLUGGY CONNECT-TOKEN ===\n`;
+        textOutput += `Data/Hora: ${diagnosticReport.timestamp}\n`;
+        textOutput += `Status Geral: ${diagnosticReport.primaryFailureCause}\n`;
+        textOutput += `Ação Recomendada: ${diagnosticReport.recommendedAction}\n`;
+        textOutput += `Total de erros registrados: ${diagnosticReport.connectTokenErrorsCount}\n\n`;
+        textOutput += `--- ÚLTIMOS ERROS DE EXECUÇÃO (/api/pluggy/connect-token) ---\n`;
+
+        if (connectTokenErrorLogs.length === 0) {
+          textOutput += `Nenhum erro registrado recentemente.\n`;
+        } else {
+          connectTokenErrorLogs.forEach((log, idx) => {
+            textOutput += `[${idx + 1}] ${log.timestamp} | Status: HTTP ${log.statusCode} | Etapa: ${log.step}\n`;
+            textOutput += `    Endpoint: ${log.endpoint}\n`;
+            textOutput += `    Erro: ${log.error || 'N/A'}\n`;
+            textOutput += `    Causa Identificada: ${log.pinpointReason || 'N/A'}\n`;
+            textOutput += `    Correção: ${log.recommendedFix || 'N/A'}\n`;
+            textOutput += `    Duração: ${log.durationMs || 0}ms\n\n`;
+          });
+        }
+
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        return res.status(200).send(textOutput);
+      }
+
+      return res.status(200).json({
+        success: true,
+        filter: {
+          targetEndpoint: '/api/pluggy/connect-token',
+          limit: limitNum,
+        },
+        diagnosticSummary: {
+          primaryCause: diagnosticReport.primaryFailureCause,
+          recommendedAction: diagnosticReport.recommendedAction,
+          statusCodesSummary: diagnosticReport.statusCodesSummary,
+          totalErrorsCount: diagnosticReport.connectTokenErrorsCount,
+        },
+        last10ErrorLogs: connectTokenErrorLogs,
+        environment: diagnosticReport.systemEnvironment,
+        allRecentLogs: allFilteredLogs,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error('Error fetching diagnostic logs:', error);
+      return res.status(500).json({ success: false, error: 'Falha ao recuperar logs de diagnóstico', details: error?.message });
+    }
+  };
+
+  app.get("/api/pluggy/logs", handleLogs);
+  app.post("/api/pluggy/logs", handleLogs);
+  app.get("/api/open-finance/logs", handleLogs);
+  app.post("/api/open-finance/logs", handleLogs);
 
 
   // API - Financial Insights Advisor
