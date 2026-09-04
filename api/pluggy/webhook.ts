@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   processPluggyWebhookEvent,
   getRecentWebhookLogs,
-} from '../../server/openFinanceService';
+} from '../_lib/pluggyClient';
 
 /**
  * Safely parse incoming request body from various Vercel / serverless formats:

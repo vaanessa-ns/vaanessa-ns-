@@ -1,30 +1,265 @@
 /**
- * Pluggy Client Helper for Vercel Serverless Functions and Node Server
- * Zero heavy external dependencies (uses native fetch)
+ * Pluggy Client Helper for Vercel Serverless Functions and Node Express Server
+ * 100% self-contained, zero external dependencies, robust exception safety
  */
 
-import {
-  recordApiLog,
-  getConnectTokenErrorLogs,
-  getConnectTokenDiagnosticReport,
-  getApiLogs,
-  ApiExecutionLog,
-  ConnectTokenDiagnosticReport,
-} from './diagnosticLogger';
+export interface ApiExecutionLog {
+  id: string;
+  timestamp: string;
+  endpoint: string;
+  method: string;
+  statusCode: number;
+  isError: boolean;
+  step: 'auth' | 'connect_token' | 'config' | 'network' | 'sync' | 'webhook' | 'serverless_exec';
+  error?: string;
+  details?: string;
+  pinpointReason?: string;
+  recommendedFix?: string;
+  durationMs?: number;
+  request?: {
+    connectorId?: number;
+    clientUserId?: string;
+    itemId?: string;
+    oauthRedirectUri?: string;
+    hasCredentials?: boolean;
+    [key: string]: any;
+  };
+  responsePreview?: string;
+  environmentSummary?: {
+    hasClientId: boolean;
+    hasClientSecret: boolean;
+    maskedClientId: string;
+    redirectUri: string;
+    nodeEnv: string;
+  };
+}
+
+export interface ConnectTokenDiagnosticReport {
+  timestamp: string;
+  totalLogsCount: number;
+  connectTokenErrorsCount: number;
+  last10ConnectTokenErrors: ApiExecutionLog[];
+  statusCodesSummary: Record<number, number>;
+  primaryFailureCause: string;
+  recommendedAction: string;
+  systemEnvironment: {
+    clientIdConfigured: boolean;
+    clientSecretConfigured: boolean;
+    maskedClientId: string;
+    oauthRedirectUri: string;
+    webhookUrl: string;
+    nodeEnv: string;
+  };
+}
 
 export interface PluggyCredentials {
   clientId: string;
   clientSecret: string;
 }
 
-export {
-  recordApiLog,
-  getConnectTokenErrorLogs,
-  getConnectTokenDiagnosticReport,
-  getApiLogs,
-  type ApiExecutionLog,
-  type ConnectTokenDiagnosticReport,
-};
+// In-memory ring buffer (up to 100 entries)
+const MAX_LOGS = 100;
+const globalLogsStore: ApiExecutionLog[] = [];
+
+export function derivePinpointReason(
+  statusCode: number,
+  errorMsg: string = '',
+  step: string = '',
+  env?: { hasClientId: boolean; hasClientSecret: boolean }
+): { pinpointReason: string; recommendedFix: string } {
+  if (env && (!env.hasClientId || !env.hasClientSecret)) {
+    return {
+      pinpointReason: 'Credenciais ausentes no ambiente do servidor (PLUGGY_CLIENT_ID ou PLUGGY_CLIENT_SECRET não definidos).',
+      recommendedFix: 'Acesse o painel da Vercel (Project Settings > Environment Variables) e cadastre PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET para o ambiente Production.',
+    };
+  }
+
+  if (statusCode === 401 || errorMsg.includes('401') || errorMsg.toLowerCase().includes('unauthorized') || errorMsg.toLowerCase().includes('invalid api key') || errorMsg.toLowerCase().includes('client keys are invalid')) {
+    return {
+      pinpointReason: 'Autenticação recusada pela Pluggy (HTTP 401 Unauthorized - client keys are invalid). As credenciais cadastradas estão incorretas, expiradas ou pertencem a outro ambiente (Sandbox vs Produção).',
+      recommendedFix: 'Verifique no Dashboard da Pluggy (https://dashboard.pluggy.ai) o Client ID e Client Secret exatos da aplicação de Produção e atualize na Vercel.',
+    };
+  }
+
+  if (statusCode === 403 || errorMsg.includes('403') || errorMsg.toLowerCase().includes('forbidden')) {
+    return {
+      pinpointReason: 'Acesso negado pela Pluggy (HTTP 403 Forbidden). Sua conta Pluggy pode estar com limites atingidos, bloqueada ou o plano não permite esta operação.',
+      recommendedFix: 'Verifique o status do seu plano e permissões no Dashboard da Pluggy.',
+    };
+  }
+
+  if (statusCode === 400 || errorMsg.includes('400') || errorMsg.toLowerCase().includes('bad request')) {
+    return {
+      pinpointReason: 'Parâmetros inválidos enviados para /connect_token (HTTP 400 Bad Request). Possível URL de redirect OAuth não permitida ou payload inconsistente.',
+      recommendedFix: 'Certifique-se de que a URL do seu domínio (ex: https://vanessa-ns.vercel.app ou https://vaanessa-ns.vercel.app) está cadastrada na lista de Redirect URIs permitidas no Dashboard da Pluggy.',
+    };
+  }
+
+  if (statusCode === 404 || errorMsg.includes('404')) {
+    return {
+      pinpointReason: 'Endpoint ou recurso não encontrado na Pluggy (HTTP 404 Not Found).',
+      recommendedFix: 'Confirme a URL do serviço da Pluggy (https://api.pluggy.ai) ou o ID do recurso solicitado.',
+    };
+  }
+
+  if (statusCode >= 500 && statusCode < 600) {
+    if (errorMsg.includes('FUNCTION_INVOCATION_FAILED') || errorMsg.includes('server error')) {
+      return {
+        pinpointReason: 'Falha na execução da função Serverless na Vercel (FUNCTION_INVOCATION_FAILED).',
+        recommendedFix: 'Verifique se o build serverless está atualizado sem dependências locais inacessíveis e com Node.js 18+ ou 20+.',
+      };
+    }
+    return {
+      pinpointReason: `Instabilidade ou erro interno nos servidores da Pluggy (HTTP ${statusCode}).`,
+      recommendedFix: 'Aguarde alguns instantes e tente novamente. Consulte o status da API da Pluggy.',
+    };
+  }
+
+  if (step === 'network' || errorMsg.toLowerCase().includes('fetch') || errorMsg.toLowerCase().includes('enotfound') || errorMsg.toLowerCase().includes('timeout')) {
+    return {
+      pinpointReason: 'Falha de comunicação de rede ao tentar contatar https://api.pluggy.ai.',
+      recommendedFix: 'Verifique a conectividade de saída e resolução DNS da infraestrutura.',
+    };
+  }
+
+  return {
+    pinpointReason: `Erro durante a etapa ${step || 'desconhecida'}: ${errorMsg || 'Falha não especificada'} (Status ${statusCode || 'N/A'}).`,
+    recommendedFix: 'Analise o log detalhado para inspecionar a mensagem completa retornada.',
+  };
+}
+
+export function recordApiLog(params: {
+  endpoint: string;
+  method?: string;
+  statusCode: number;
+  step: 'auth' | 'connect_token' | 'config' | 'network' | 'sync' | 'webhook' | 'serverless_exec';
+  error?: string;
+  details?: string;
+  durationMs?: number;
+  request?: Record<string, any>;
+  responsePreview?: string;
+  envSummary?: {
+    hasClientId: boolean;
+    hasClientSecret: boolean;
+    maskedClientId: string;
+    redirectUri: string;
+    nodeEnv: string;
+  };
+}): ApiExecutionLog {
+  const isError = params.statusCode >= 400 || Boolean(params.error);
+  const { pinpointReason, recommendedFix } = derivePinpointReason(
+    params.statusCode,
+    params.error || params.details || '',
+    params.step,
+    params.envSummary
+  );
+
+  const logEntry: ApiExecutionLog = {
+    id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    endpoint: params.endpoint,
+    method: (params.method || 'POST').toUpperCase(),
+    statusCode: params.statusCode,
+    isError,
+    step: params.step,
+    error: params.error,
+    details: params.details,
+    pinpointReason,
+    recommendedFix,
+    durationMs: params.durationMs,
+    request: params.request,
+    responsePreview: params.responsePreview ? params.responsePreview.slice(0, 500) : undefined,
+    environmentSummary: params.envSummary,
+  };
+
+  globalLogsStore.unshift(logEntry);
+  if (globalLogsStore.length > MAX_LOGS) {
+    globalLogsStore.length = MAX_LOGS;
+  }
+
+  return logEntry;
+}
+
+export function getApiLogs(options?: {
+  endpoint?: string;
+  errorsOnly?: boolean;
+  limit?: number;
+}): ApiExecutionLog[] {
+  let filtered = [...globalLogsStore];
+
+  if (options?.endpoint) {
+    const ep = options.endpoint.toLowerCase();
+    filtered = filtered.filter((l) => l.endpoint.toLowerCase().includes(ep));
+  }
+
+  if (options?.errorsOnly) {
+    filtered = filtered.filter((l) => l.isError);
+  }
+
+  const limit = typeof options?.limit === 'number' && options.limit > 0 ? options.limit : 50;
+  return filtered.slice(0, limit);
+}
+
+export function getConnectTokenErrorLogs(limit: number = 10): ApiExecutionLog[] {
+  const targetEndpoints = [
+    '/api/pluggy/connect-token',
+    '/api/open-finance/connect-token',
+    'https://api.pluggy.ai/connect_token',
+    'https://api.pluggy.ai/auth',
+  ];
+
+  const connectTokenErrors = globalLogsStore.filter((log) => {
+    if (!log.isError && log.statusCode < 400) return false;
+
+    const matchesEndpoint = targetEndpoints.some((ep) =>
+      log.endpoint.toLowerCase().includes(ep.toLowerCase())
+    );
+    const matchesStep = log.step === 'connect_token' || log.step === 'auth' || log.step === 'config';
+
+    return matchesEndpoint || matchesStep;
+  });
+
+  return connectTokenErrors.slice(0, limit);
+}
+
+export function getConnectTokenDiagnosticReport(): ConnectTokenDiagnosticReport {
+  const last10Errors = getConnectTokenErrorLogs(10);
+
+  const statusCodesSummary: Record<number, number> = {};
+  for (const err of last10Errors) {
+    const code = err.statusCode || 0;
+    statusCodesSummary[code] = (statusCodesSummary[code] || 0) + 1;
+  }
+
+  let primaryFailureCause = 'Nenhum erro recente de connect-token registrado.';
+  let recommendedAction = 'O sistema está operando normalmente ou nenhuma requisição falhou recentemente.';
+
+  if (last10Errors.length > 0) {
+    const mostRecent = last10Errors[0];
+    primaryFailureCause = mostRecent.pinpointReason || mostRecent.error || `Falha com HTTP ${mostRecent.statusCode}`;
+    recommendedAction = mostRecent.recommendedFix || 'Consulte os detalhes do log para verificar a resposta da Pluggy.';
+  }
+
+  const { clientId, clientSecret } = getSanitizedCredentials();
+
+  return {
+    timestamp: new Date().toISOString(),
+    totalLogsCount: globalLogsStore.length,
+    connectTokenErrorsCount: last10Errors.length,
+    last10ConnectTokenErrors: last10Errors,
+    statusCodesSummary,
+    primaryFailureCause,
+    recommendedAction,
+    systemEnvironment: {
+      clientIdConfigured: Boolean(clientId),
+      clientSecretConfigured: Boolean(clientSecret),
+      maskedClientId: clientId ? `${clientId.slice(0, 4)}...${clientId.slice(-4)}` : 'Não configurado',
+      oauthRedirectUri: getSanitizedRedirectUri(),
+      webhookUrl: getDefaultWebhookUrl(),
+      nodeEnv: process.env.NODE_ENV || 'production',
+    },
+  };
+}
 
 export function getSanitizedCredentials(): PluggyCredentials {
   const rawId =
@@ -68,7 +303,7 @@ export function getSanitizedRedirectUri(override?: string): string {
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL.replace(/^https?:\/\//, '')}`;
   }
-  return 'https://vanessa-ns.vercel.app';
+  return 'https://vaanessa-ns.vercel.app';
 }
 
 export function getDefaultWebhookUrl(): string {
@@ -80,7 +315,7 @@ export function getDefaultWebhookUrl(): string {
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL.replace(/^https?:\/\//, '')}/api/pluggy/webhook`;
   }
-  return 'https://vanessa-ns.vercel.app/api/pluggy/webhook';
+  return 'https://vaanessa-ns.vercel.app/api/pluggy/webhook';
 }
 
 let cachedPluggyApiKey: { key: string; expiresAt: number } | null = null;
@@ -88,7 +323,7 @@ let cachedPluggyApiKey: { key: string; expiresAt: number } | null = null;
 /**
  * Autentica com a API da Pluggy e obtém o X-API-KEY
  */
-export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?: string; status?: number }> {
+export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?: string; status?: number; rawResponse?: any }> {
   const startTime = Date.now();
   const { clientId, clientSecret } = getSanitizedCredentials();
   const envSummary = {
@@ -140,8 +375,9 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
     if (!res.ok) {
       let errorMsg = `HTTP ${res.status}`;
       let rawDetails = '';
+      let errorJson: any = null;
       try {
-        const errorJson = await res.json();
+        errorJson = await res.json();
         rawDetails = JSON.stringify(errorJson);
         if (typeof errorJson?.message === 'string') {
           errorMsg = errorJson.message;
@@ -181,6 +417,7 @@ export async function getPluggyApiKey(): Promise<{ apiKey: string | null; error?
         apiKey: null,
         error: fullError,
         status: res.status,
+        rawResponse: errorJson || rawDetails,
       };
     }
 
@@ -255,6 +492,7 @@ export async function createPluggyConnectToken(options?: {
   error?: string;
   step?: 'auth' | 'connect_token' | 'config' | 'network';
   status?: number;
+  rawResponse?: any;
 }> {
   const startTime = Date.now();
   const { clientId, clientSecret } = getSanitizedCredentials();
@@ -299,6 +537,7 @@ export async function createPluggyConnectToken(options?: {
       error: errorMsg,
       step: 'auth',
       status: authResult.status || 401,
+      rawResponse: authResult.rawResponse,
     };
   }
 
@@ -364,8 +603,9 @@ export async function createPluggyConnectToken(options?: {
     } else {
       let errorDetail = `HTTP ${res.status}`;
       let rawJson = '';
+      let errJson: any = null;
       try {
-        const errJson = await res.json();
+        errJson = await res.json();
         rawJson = JSON.stringify(errJson);
         if (typeof errJson?.message === 'string') {
           errorDetail = errJson.message;
@@ -411,6 +651,7 @@ export async function createPluggyConnectToken(options?: {
         error: fullError,
         step: 'connect_token',
         status: res.status,
+        rawResponse: errJson || rawJson,
       };
     }
   } catch (e: any) {
@@ -525,7 +766,7 @@ export async function getPluggyDiagnostics() {
     connectTokenGenerated,
     connectTokenPreview,
     sandboxReady: true,
-    mode: authStatus === 'SUCCESS' ? 'pluggy-live' : 'simulation-sandbox',
+    mode: authStatus === 'SUCCESS' ? 'pluggy-live' : 'unconfigured',
     supportedConnectorsCount: 13,
     webhookEndpoint: getDefaultWebhookUrl(),
     connectTokenErrorsCount: connectTokenErrors.length,
@@ -742,5 +983,259 @@ export async function deletePluggyItem(itemId: string): Promise<{
   }
 }
 
+export async function registerPluggyWebhook(
+  webhookUrl?: string,
+  event: string = 'all'
+): Promise<{
+  success: boolean;
+  webhook?: any;
+  error?: string;
+  status?: number;
+}> {
+  const authResult = await getPluggyApiKey();
+  const apiKey = authResult.apiKey;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: authResult.error || 'Credenciais Pluggy não configuradas.',
+      status: 401,
+    };
+  }
 
+  const targetUrl = webhookUrl || getDefaultWebhookUrl();
+
+  try {
+    const res = await fetch('https://api.pluggy.ai/webhooks', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
+      body: JSON.stringify({
+        url: targetUrl,
+        event: event,
+      }),
+    });
+
+    if (!res.ok) {
+      let errDetail = `HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        errDetail = errJson?.message || errJson?.codeDescription || JSON.stringify(errJson);
+      } catch {}
+      return {
+        success: false,
+        error: `Falha ao registrar webhook na Pluggy: ${errDetail}`,
+        status: res.status,
+      };
+    }
+
+    const data = await res.json();
+    return {
+      success: true,
+      webhook: data,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Erro ao conectar com api.pluggy.ai/webhooks: ${err?.message || 'Falha de comunicação'}`,
+      status: 500,
+    };
+  }
+}
+
+export async function listPluggyWebhooks(): Promise<{
+  success: boolean;
+  webhooks?: any[];
+  error?: string;
+  status?: number;
+}> {
+  const authResult = await getPluggyApiKey();
+  const apiKey = authResult.apiKey;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: authResult.error || 'Credenciais Pluggy não configuradas.',
+      status: 401,
+    };
+  }
+
+  try {
+    const res = await fetch('https://api.pluggy.ai/webhooks', {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
+    });
+
+    if (!res.ok) {
+      let errDetail = `HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        errDetail = errJson?.message || errJson?.codeDescription || JSON.stringify(errJson);
+      } catch {}
+      return {
+        success: false,
+        error: `Falha ao consultar webhooks: ${errDetail}`,
+        status: res.status,
+      };
+    }
+
+    const data = await res.json();
+    const results = data?.results || (Array.isArray(data) ? data : []);
+    return {
+      success: true,
+      webhooks: results,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Falha ao consultar webhooks na Pluggy',
+      status: 500,
+    };
+  }
+}
+
+export async function deletePluggyWebhook(webhookId: string): Promise<{
+  success: boolean;
+  error?: string;
+  status?: number;
+}> {
+  const authResult = await getPluggyApiKey();
+  const apiKey = authResult.apiKey;
+  if (!apiKey) {
+    return {
+      success: false,
+      error: authResult.error || 'Credenciais Pluggy não configuradas.',
+      status: 401,
+    };
+  }
+
+  try {
+    const res = await fetch(`https://api.pluggy.ai/webhooks/${webhookId}`, {
+      method: 'DELETE',
+      headers: {
+        'Accept': 'application/json',
+        'X-API-KEY': apiKey,
+      },
+    });
+
+    if (!res.ok) {
+      let errDetail = `HTTP ${res.status}`;
+      try {
+        const errJson = await res.json();
+        errDetail = errJson?.message || errJson?.codeDescription || JSON.stringify(errJson);
+      } catch {}
+      return {
+        success: false,
+        error: `Falha ao deletar webhook na Pluggy: ${errDetail}`,
+        status: res.status,
+      };
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Falha ao deletar webhook',
+      status: 500,
+    };
+  }
+}
+
+export interface WebhookLogEntry {
+  id: string;
+  event: string;
+  itemId?: string;
+  timestamp: string;
+  status: 'PROCESSED' | 'SKIPPED_DUPLICATE' | 'ERROR' | 'NO_ITEM';
+  message?: string;
+}
+
+const processedEventIds = new Map<string, number>();
+const webhookEventLogs: WebhookLogEntry[] = [];
+
+export function getRecentWebhookLogs(): WebhookLogEntry[] {
+  return [...webhookEventLogs].reverse();
+}
+
+export async function processPluggyWebhookEvent(rawPayload: any): Promise<{
+  success: boolean;
+  eventId?: string;
+  event?: string;
+  itemId?: string;
+  message: string;
+  duplicate?: boolean;
+}> {
+  let eventPayload: any = {};
+  if (typeof rawPayload === 'string') {
+    try {
+      eventPayload = JSON.parse(rawPayload);
+    } catch {
+      eventPayload = {};
+    }
+  } else if (rawPayload && typeof rawPayload === 'object') {
+    eventPayload = rawPayload;
+  }
+
+  const eventId = String(
+    eventPayload.id ||
+    eventPayload.eventId ||
+    `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  );
+  const eventType = String(eventPayload.event || eventPayload.type || 'unknown').trim();
+
+  let itemId = '';
+  if (eventPayload.itemId) {
+    itemId = String(eventPayload.itemId);
+  } else if (eventPayload.data?.itemId) {
+    itemId = String(eventPayload.data.itemId);
+  } else if (!eventType.startsWith('connector/') && eventPayload.data?.id && typeof eventPayload.data.id === 'string') {
+    itemId = String(eventPayload.data.id);
+  }
+
+  if (processedEventIds.has(eventId)) {
+    const log: WebhookLogEntry = {
+      id: eventId,
+      event: eventType,
+      itemId: itemId || undefined,
+      timestamp: new Date().toISOString(),
+      status: 'SKIPPED_DUPLICATE',
+      message: 'Evento duplicado ignorado por idempotência.',
+    };
+    webhookEventLogs.push(log);
+    return {
+      success: true,
+      eventId,
+      event: eventType,
+      itemId: itemId || undefined,
+      message: 'Evento duplicado ignorado.',
+      duplicate: true,
+    };
+  }
+
+  try {
+    processedEventIds.set(eventId, Date.now());
+  } catch {}
+
+  const log: WebhookLogEntry = {
+    id: eventId,
+    event: eventType,
+    itemId: itemId || undefined,
+    timestamp: new Date().toISOString(),
+    status: 'PROCESSED',
+    message: `Evento ${eventType} recebido para itemId ${itemId || 'N/A'}.`,
+  };
+  webhookEventLogs.push(log);
+
+  return {
+    success: true,
+    eventId,
+    event: eventType,
+    itemId: itemId || undefined,
+    message: `Evento ${eventType} processado com sucesso.`,
+  };
+}
 
