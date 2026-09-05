@@ -116,7 +116,7 @@ async function startServer() {
         sandbox: tokenResult.sandbox,
       });
     } catch (error: any) {
-      console.error("Error creating connect token:", error);
+      console.warn("Error creating connect token:", error);
       const errorDetails = typeof error?.message === 'string' ? error.message : JSON.stringify(error || 'Failed to initialize Open Finance connect token');
       return res.status(500).json({
         success: false,

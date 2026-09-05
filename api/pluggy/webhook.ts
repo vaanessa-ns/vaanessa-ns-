@@ -2,6 +2,10 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   processPluggyWebhookEvent,
   getRecentWebhookLogs,
+  registerPluggyWebhook,
+  listPluggyWebhooks,
+  deletePluggyWebhook,
+  getDefaultWebhookUrl,
 } from '../_lib/pluggyClient';
 
 /**
@@ -67,13 +71,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ ok: true });
   }
 
-  // Determine current domain
-  const host = req.headers?.host || 'vanessa-ns.vercel.app';
-  const protocol = req.headers?.['x-forwarded-proto'] || 'https';
-  const currentEndpoint = `${protocol}://${host}/api/pluggy/webhook`;
+  const defaultUrl = getDefaultWebhookUrl();
+  const reqUrl = req.url || '';
+  const action = (req.query?.action as string) || '';
 
-  // GET: Health Check & Webhook Status / Logs for diagnostics and Pluggy verification
+  // 1. DELETE: Delete webhook registration
+  if (req.method === 'DELETE') {
+    try {
+      const body = await parseBody(req);
+      const webhookId = (req.query.id as string) || body?.id;
+
+      if (!webhookId) {
+        return res.status(400).json({ success: false, error: 'Informe o ID do webhook a ser deletado.' });
+      }
+
+      const result = await deletePluggyWebhook(webhookId);
+      return res.status(200).json(result);
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message });
+    }
+  }
+
+  // 2. GET: List webhooks OR Webhook Health/Status
   if (req.method === 'GET') {
+    // If querying webhooks management
+    if (action === 'list' || reqUrl.includes('webhooks') || req.query?.manage === 'true') {
+      try {
+        const result = await listPluggyWebhooks();
+        if (!result.success) {
+          return res.status(result.status || 500).json(result);
+        }
+        return res.status(200).json({
+          success: true,
+          webhooks: result.webhooks || [],
+          targetWebhookUrl: defaultUrl,
+        });
+      } catch (err: any) {
+        return res.status(500).json({
+          success: false,
+          error: err?.message || 'Falha ao consultar webhooks',
+        });
+      }
+    }
+
+    // Default GET: Health Check & Webhook Status / Logs for diagnostics and Pluggy verification
+    const host = req.headers?.host || 'vanessa-ns.vercel.app';
+    const protocol = req.headers?.['x-forwarded-proto'] || 'https';
+    const currentEndpoint = `${protocol}://${host}/api/pluggy/webhook`;
+
     try {
       const recentLogs = getRecentWebhookLogs();
       return res.status(200).json({
@@ -106,16 +151,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  // POST: Receive Pluggy webhook events
+  // 3. POST: Register webhook in Pluggy OR Receive Pluggy webhook event
   if (req.method === 'POST') {
     try {
       const body = await parseBody(req);
 
-      // Validate and sanitize basic event properties
+      // Check if this is a webhook registration request (from ConnectBankModal or admin)
+      if (body?.url || action === 'register' || (reqUrl.includes('webhooks') && !body?.event?.includes('/'))) {
+        const url = body?.url || defaultUrl;
+        const event = body?.event || 'all';
+
+        const result = await registerPluggyWebhook(url, event);
+        if (!result.success) {
+          return res.status(result.status || 500).json(result);
+        }
+
+        return res.status(201).json({
+          success: true,
+          message: 'Webhook registrado com sucesso na Pluggy!',
+          webhook: result.webhook,
+        });
+      }
+
+      // Otherwise, this is an incoming webhook event notification from Pluggy
       const eventType = String(body?.event || body?.type || 'unknown').trim();
       const eventId = String(body?.id || body?.eventId || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
       
-      // Accurately extract itemId (do NOT confuse with connectorId for connector events)
       let itemId: string | null = null;
       if (body?.itemId) {
         itemId = String(body.itemId);
@@ -127,7 +188,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       console.log(`[API Webhook /api/pluggy/webhook] Recebido evento: ${eventType} | itemId: ${itemId || 'N/A'} | eventId: ${eventId}`);
 
-      // Process event safely with full error isolation so no uncaught rejection crashes the serverless runtime
       let processResult: any = { success: true };
       try {
         processResult = await processPluggyWebhookEvent(body);
@@ -151,7 +211,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     } catch (criticalErr: any) {
       console.error('[API Webhook] Erro crítico no handler de webhook:', criticalErr?.message || criticalErr);
-      // Guarantee 200 response with error details so Pluggy does not encounter HTTP 500
       return res.status(200).json({
         received: true,
         status: 'error_handled',
@@ -163,6 +222,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   return res.status(405).json({
     success: false,
-    error: 'Method not allowed. Use POST to receive webhook events or GET for status.',
+    error: 'Method not allowed.',
   });
 }

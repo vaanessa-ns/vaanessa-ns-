@@ -1,6 +1,58 @@
 {
   "rewrites": [
     {
+      "source": "/api/connect-token",
+      "destination": "/api/pluggy/connect-token"
+    },
+    {
+      "source": "/api/open-finance/connect-token",
+      "destination": "/api/pluggy/connect-token"
+    },
+    {
+      "source": "/api/open-finance/sync",
+      "destination": "/api/pluggy/sync"
+    },
+    {
+      "source": "/api/open-finance/disconnect",
+      "destination": "/api/pluggy/disconnect"
+    },
+    {
+      "source": "/api/open-finance/webhook",
+      "destination": "/api/pluggy/webhook"
+    },
+    {
+      "source": "/api/open-finance/diagnostics",
+      "destination": "/api/pluggy/diagnostics"
+    },
+    {
+      "source": "/api/open-finance/logs",
+      "destination": "/api/pluggy/diagnostics?view=logs"
+    },
+    {
+      "source": "/api/open-finance/:path*",
+      "destination": "/api/pluggy/:path*"
+    },
+    {
+      "source": "/api/pluggy/webhooks",
+      "destination": "/api/pluggy/webhook"
+    },
+    {
+      "source": "/api/pluggy/logs",
+      "destination": "/api/pluggy/diagnostics?view=logs"
+    },
+    {
+      "source": "/api/pluggy/auth",
+      "destination": "/api/pluggy/diagnostics?view=auth"
+    },
+    {
+      "source": "/api/gemini/advisor",
+      "destination": "/api/gemini?action=advisor"
+    },
+    {
+      "source": "/api/gemini/chat",
+      "destination": "/api/gemini?action=chat"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },

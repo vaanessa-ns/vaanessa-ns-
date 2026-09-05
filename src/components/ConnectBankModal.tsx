@@ -17,6 +17,7 @@ import {
   ChevronUp,
   CreditCard,
   Wallet,
+  ExternalLink,
 } from 'lucide-react';
 import { PluggyConnect } from 'react-pluggy-connect';
 import { useFinance } from '../context/FinanceContext';
@@ -290,26 +291,46 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
       const contentType = res.headers.get('content-type') || '';
 
       if (contentType.includes('application/json')) {
-        tokenData = await res.json();
+        tokenData = await res.json().catch(() => null);
       } else {
         const rawText = await res.text().catch(() => '');
-        console.error(`[ConnectBankModal] Servidor retornou resposta não-JSON (HTTP ${res.status}):`, rawText);
-        throw new Error(
-          `O servidor retornou uma resposta inválida (HTTP ${res.status}). Verifique se as variáveis PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET estão configuradas na Vercel.`
+        console.warn(`[ConnectBankModal] Servidor retornou resposta não-JSON (HTTP ${res.status}):`, rawText);
+        setStep('consent');
+        setErrorMessage(
+          `O servidor retornou uma resposta inesperada (HTTP ${res.status}). Verifique se as variáveis PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET estão configuradas no ambiente.`
         );
+        return;
       }
 
       if (!res.ok || (!tokenData?.connectToken && !tokenData?.accessToken)) {
-        const backendErrorMsg = parseSafeErrorMessage(
+        const rawErrorMsg = parseSafeErrorMessage(
           tokenData?.error || tokenData?.details || tokenData,
           'Não foi possível gerar o Connect Token na Pluggy.'
         );
-        throw new Error(backendErrorMsg);
+
+        let userFriendlyMsg = rawErrorMsg;
+        if (
+          res.status === 401 ||
+          rawErrorMsg.toLowerCase().includes('client keys are invalid') ||
+          rawErrorMsg.toLowerCase().includes('unauthorized') ||
+          tokenData?.step === 'auth'
+        ) {
+          userFriendlyMsg =
+            'Autenticação recusada pela Pluggy (HTTP 401): As credenciais cadastradas (PLUGGY_CLIENT_ID / PLUGGY_CLIENT_SECRET) foram recusadas como inválidas ou expiradas pela Pluggy. Por favor, verifique suas chaves de Produção ativas no Dashboard da Pluggy (https://dashboard.pluggy.ai) e atualize as configurações do ambiente.';
+        }
+
+        console.warn('[ConnectBankModal] Falha ao obter Connect Token da Pluggy:', res.status, rawErrorMsg);
+        setStep('consent');
+        setErrorMessage(userFriendlyMsg);
+        return;
       }
 
       const token = tokenData.accessToken || tokenData.connectToken;
       if (!token || typeof token !== 'string' || token.trim() === '') {
-        throw new Error('Token de acesso retornado pela Pluggy é inválido.');
+        console.warn('[ConnectBankModal] Token de acesso vazio retornado pela Pluggy.');
+        setStep('consent');
+        setErrorMessage('Token de acesso retornado pela Pluggy é inválido ou expirou.');
+        return;
       }
 
       setConnectToken(token);
@@ -317,7 +338,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
       // Real Pluggy Connect widget flow for live Open Finance
       setStep('pluggy_widget');
     } catch (err: any) {
-      console.error('[ConnectBankModal] Erro ao iniciar conexão:', err);
+      console.warn('[ConnectBankModal] Erro de comunicação ao iniciar conexão:', err);
       setStep('consent');
       const safeMsg = parseSafeErrorMessage(err, 'Falha ao inicializar o widget da Pluggy.');
       setErrorMessage(safeMsg);
@@ -364,14 +385,14 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
         setErrorMessage(parseSafeErrorMessage(result.message, 'Erro ao salvar os dados sincronizados.'));
       }
     } catch (err: any) {
-      console.error('[ConnectBankModal] Erro na sincronização pós-conexão:', err);
+      console.warn('[ConnectBankModal] Erro na sincronização pós-conexão:', err);
       setStep('consent');
       setErrorMessage(parseSafeErrorMessage(err, 'Falha na sincronização pós-conexão.'));
     }
   };
 
   const handlePluggyError = (error: any) => {
-    console.error('[ConnectBankModal] Pluggy Connect Error:', error);
+    console.warn('[ConnectBankModal] Pluggy Connect Error:', error);
     setStep('consent');
     const safeMsg = parseSafeErrorMessage(
       error,
@@ -654,11 +675,34 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
               {errorMessage && (
                 <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-rose-400 flex items-start gap-3 animate-in fade-in">
                   <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-rose-400" />
-                  <div className="flex-1 space-y-1 text-left">
+                  <div className="flex-1 space-y-2 text-left">
                     <p className="font-bold text-xs text-rose-300">Falha na Conexão Bancária</p>
                     <p className="text-xs text-rose-200/90 leading-relaxed break-words font-normal">
                       {parseSafeErrorMessage(errorMessage)}
                     </p>
+                    {errorMessage.includes('pluggy.ai') && (
+                      <div className="pt-2 border-t border-rose-500/20 flex flex-wrap items-center gap-3">
+                        <a
+                          href="https://dashboard.pluggy.ai"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-400 hover:text-emerald-300 hover:underline"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Abrir Dashboard Pluggy</span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setErrorMessage(null);
+                            fetchDiagnostics();
+                          }}
+                          className="text-xs text-slate-300 hover:text-white underline cursor-pointer"
+                        >
+                          Revalidar status
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -740,7 +784,7 @@ export const ConnectBankModal: React.FC<ConnectBankModalProps> = ({ isOpen, onCl
                 onSuccess={handlePluggySuccess}
                 onError={handlePluggyError}
                 onLoadError={(loadError) => {
-                  console.error('[PluggyConnect] onLoadError:', loadError);
+                  console.warn('[PluggyConnect] onLoadError:', loadError);
                   handlePluggyError(loadError);
                 }}
                 onEvent={handlePluggyEvent}

@@ -74,7 +74,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       sandbox: tokenResult.sandbox,
     });
   } catch (error: any) {
-    console.error('[API /api/pluggy/connect-token] Erro inesperado no handler:', error?.message || error);
+    console.warn('[API /api/pluggy/connect-token] Erro inesperado no handler:', error?.message || error);
     const errorDetails = typeof error?.message === 'string' ? error.message : JSON.stringify(error || 'Erro inesperado no servidor');
     return res.status(500).json({
       success: false,
